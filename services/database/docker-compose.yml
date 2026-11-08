@@ -1,0 +1,28 @@
+version: "3.8"
+
+services:
+  db:
+    build:
+      context: .
+      # Kept as a real Dockerfile rather than `dockerfile_inline` so Renovate's
+      # dockerfile manager can see the base image and refresh its digest.
+      dockerfile: Dockerfile
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    ports:
+      - ${DOCKER_HOST_POSTGRES_PORT}:${POSTGRES_PORT}
+    command:
+      [
+        "postgres",
+        "-c",
+        "shared_preload_libraries=pg_cron",
+        "-c",
+        "cron.database_name=${POSTGRES_DB}",
+      ]
+
+volumes:
+  postgres_data:

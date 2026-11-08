@@ -8,92 +8,67 @@ parameters:
 
 aliases:
   - &monitor-e2e-base
-    working_directory: ~/source-verify
     steps:
-      - checkout
       - run:
-          name: install node-fetch dotenv
-          command: npm install node-fetch dotenv
+          name: Avoid hosts unknown for github
+          command: mkdir ~/.ssh/ && echo -e "Host github.com\n\tStrictHostKeyChecking no\n" > ~/.ssh/config
+      - run:
+          name: checkout metacoin-source-verify
+          command: cd ~/project && git clone git@github.com:sourcifyeth/metacoin-source-verify.git
+      - run:
+          name: install
+          command: cd ~/project/metacoin-source-verify && npm ci
       - run:
           name: monitor test
-          command: ./scripts/monitor_ci.sh
+          command: cd ~/project/metacoin-source-verify && ./scripts/monitor_e2e.sh
           no_output_timeout: 30m
     docker:
-      - image: cimg/node:16.15
+      - image: cimg/node:22.23.4@sha256:097391155ab978930031757a857cf57278b907da8a994f278bbd27443c5018bf
   - &verification-e2e-base
-    working_directory: ~/source-verify
     steps:
-      - checkout
       - run:
-          name: install dotenv
-          command: npm install dotenv
+          name: Avoid hosts unknown for github
+          command: mkdir ~/.ssh/ && echo -e "Host github.com\n\tStrictHostKeyChecking no\n" > ~/.ssh/config
+      - run:
+          name: checkout metacoin-source-verify
+          command: cd ~/project && git clone git@github.com:sourcifyeth/metacoin-source-verify.git
+      - run:
+          name: install
+          command: cd ~/project/metacoin-source-verify && npm ci
       - run:
           name: verification test
-          command: ./scripts/verification-e2e.sh
+          command: cd ~/project/metacoin-source-verify && ./scripts/verification_e2e.sh
       - store_artifacts:
-          path: ./verified-contracts
+          path: ~/project/metacoin-source-verify/verified-contracts
     docker:
-      - image: cimg/node:16.15
+      - image: cimg/node:22.23.4@sha256:097391155ab978930031757a857cf57278b907da8a994f278bbd27443c5018bf
 
 workflows:
   e2e-tests:
     jobs:
-      - monitor-e2e-goerli
       - monitor-e2e-sepolia
-      - verification-e2e-goerli
+      - monitor-e2e-hoodi
       - verification-e2e-sepolia
-  s3-backup-check:
-    jobs:
-      - check-s3-backup
-  etherscan-instances:
-    jobs:
-      - check-etherscan-instances
+      - verification-e2e-hoodi
 
 jobs:
-  monitor-e2e-goerli:
-    <<: *monitor-e2e-base
-    environment:
-      CHAIN_ID: 5
-      CHAIN_NAME: goerli
   monitor-e2e-sepolia:
     <<: *monitor-e2e-base
     environment:
-      CHAIN_ID: '11155111'
+      CHAIN_ID: "11155111"
       CHAIN_NAME: sepolia
-  verification-e2e-goerli:
-    <<: *verification-e2e-base
+  monitor-e2e-hoodi:
+    <<: *monitor-e2e-base
     environment:
-      CHAIN_ID: 5
-      CHAIN_NAME: goerli
+      CHAIN_ID: "560048"
+      CHAIN_NAME: hoodi
   verification-e2e-sepolia:
     <<: *verification-e2e-base
     environment:
-      CHAIN_ID: '11155111'
+      CHAIN_ID: "11155111"
       CHAIN_NAME: sepolia
-  check-s3-backup:
-    working_directory: ~/source-verify
-    steps:
-      - checkout
-      - run:
-          name: install dependencies
-          command: npm install @aws-sdk/client-s3
-      - run:
-          name: backup test
-          command: node --experimental-fetch ./scripts/check-s3-backup.mjs
-    docker:
-      - image: cimg/node:16.15
-  check-etherscan-instances:
-    working_directory: ~/source-verify
-    steps:
-      - checkout
-      - run:
-          name: install dependencies
-          command: npm install && npx lerna bootstrap
-      - run:
-          name: build
-          command: npx lerna run build
-      - run: 
-          name: test
-          command: npx mocha test/etherscan/etherscanInstances.js --exit
-    docker:
-      - image: cimg/node:16.15
+  verification-e2e-hoodi:
+    <<: *verification-e2e-base
+    environment:
+      CHAIN_ID: "560048"
+      CHAIN_NAME: hoodi

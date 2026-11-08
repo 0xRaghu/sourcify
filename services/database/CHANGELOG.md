@@ -1,0 +1,228 @@
+# Changelog for `sourcify-database`
+
+## sourcify-database@2.15.4 - 2026-11-03
+
+- Update dependencies
+
+## sourcify-database@2.15.3 - 2026-10-21
+
+- feat(4byte): live signature stats from a daily BigQuery base, and /recent (#3033)
+
+## sourcify-database@2.15.2 - 2026-10-05
+
+- Update dependencies
+
+## sourcify-database@2.15.1 - 2026-09-22
+
+- feat(database): add created_at to compiled_contracts_metadata (#2963)
+- feat: switch metadata reads to compiled_contracts_metadata (#2942)
+
+## sourcify-database@2.15.0 - 2026-09-01
+
+- Drop the obsolete idx_code_code_first_75 index (#2937)
+- feat: store metadata once per compilation in compiled_contracts_metadata (#2941)
+- perf(scripts): two-phase rewrite of the compiled_contracts_metadata backfill (#2952)
+
+## sourcify-database@2.14.0 - 2026-08-20
+
+- Speed up delete-sourcify-match orphan checks and add verification_jobs FK index (#2888)
+- refactor(server): remove API v1 (#2877)
+- fix: prevent and auto-recover stuck v2 verification jobs (compiler OOM/hang) (#2880) (#2886)
+- Fix similarity API database load and timeouts (#2918)
+- security: pin CI images and actions by digest (#2915)
+
+## sourcify-database@2.13.3 - 2026-07-06
+
+- backfill missing Vyper immutableReferences (#2855)
+
+## sourcify-database@2.13.2 - 2026-06-16
+
+- Update dependencies
+
+## sourcify-database@2.13.1 - 2026-05-27
+
+- Fix hanging contracts endpoint (#2807)
+
+## sourcify-database@2.13.0 - 2026-05-27
+
+- Add chain_id column to sourcify_matches (#2805)
+- Add backfill script for sourcify_matches.chain_id (#2806)
+- WARNING: After importing the migrations, execute `post-v2.12-to-v2.13-upgrade.mjs` in order to upgrade database, see more details here: https://github.com/argotorg/sourcify/issues/2111#issuecomment-4552389122
+
+## sourcify-database@2.12.3 - 2026-05-21
+
+- Update dependencies
+
+## sourcify-database@2.12.2 - 2026-04-14
+
+- update dependencies
+
+## sourcify-database@2.12.1 - 2026-03-30
+
+- Format changelog
+
+## sourcify-database@2.12.0 - 2026-03-17
+
+- Drop the metadata dependency and support old solc output (#2652)
+- Add `transientStorageLayout` to `compiled_ontracts.compilation_artifacts` (#1654)
+- Add `additonal_input` column to `compiled_contracts` (#2001)
+- Add index on `contract_deployments.chain_id` (#2694)
+
+## sourcify-database@2.11.0 - 2026-03-02
+
+- Add migration allow_delete_cbor_auxdata_transformations (#2619)
+- Add migration drop_session_table (#2671)
+
+## sourcify-database@2.10.4 - 2026-01-20
+
+- Update dependencies
+
+## sourcify-database@2.10.3 - 2026-01-07
+
+- Add migrations for adding indexes on created_at columns (#2551)
+
+## sourcify-database@2.10.2 - 2025-12-15
+
+- Update dependencies
+
+## sourcify-database@2.10.1 - 2025-11-19
+
+- Add `idx_code_code_first_75` index (#2481)
+
+## sourcify-database@2.10.0 - 2025-10-28
+
+- add external verification migration (#2430)
+- Add compiler version to unique constraint of compiled_contracts (#2464)
+
+## sourcify-database@2.9.0 - 2025-10-16
+
+- Add signature tables and queries for the new 4byte service. Create a materialized view for the `/stats` endpoint.
+- Change migrations scripts to accomodate multiple database instances during CI test runs: one for 4byte and one for sourcify-server.
+
+## sourcify-database@2.8.0 - 2025-09-18
+
+- Add migrations for signature tables (#2344)
+
+## sourcify-database@2.7.2 - 2025-08-25
+
+- Add issue references in replace script configuration files (#2304)
+- Update dependencies
+
+## sourcify-database@2.7.1 - 2025-08-12
+
+- Track total replaced contracts in the massive replace script (#2293)
+- Fixes to massive replace for contracts from verifyDepracted (#2299)
+
+## sourcify-database@2.7.0 - 2025-08-11
+
+- Fix processing logic in massive-replace-script to handle errors and update contract counter correctly (#2280)
+- Replace script config for fixing missing constructor args transformations (#2282)
+- Replace script config for fixing mismatched metadata (#2285)
+- Add support for storing failed contracts in massive replace script
+- Add excludeContract option to ReplaceConfig and implement contract skipping logic
+
+## sourcify-database@2.6.0 - 2025-08-04
+
+- Implement new migration system based on dbmate, compatible with VerA
+- Implement new massive-replace script to easily execute fixes on misaligned data on Sourcify database
+
+## sourcify-database@2.5.4 - 2025-07-09
+
+- update dependencies
+
+## sourcify-database@2.5.3 - 2025-06-18
+
+- Update readme and .env.dev for documentation
+- Update packages
+
+## sourcify-database@2.5.2 - 2025-05-20
+
+- update dependencies
+
+## sourcify-database@2.5.1 - 2025-05-06
+
+- update dependencies
+
+## sourcify-database@2.5.0 - 2025-04-30
+
+- Add `error_data` column to `verification_jobs` table
+- Add local-docker migration configuration
+- Update dependencies
+
+## sourcify-database@2.4.0 - 2025-04-09
+
+- Add `updated_at` to `sourcify_matches`
+
+## sourcify-database@2.3.0 - 2025-03-19
+
+- Add verification_jobs tables
+- Update the VerA schema
+- Update dependencies
+
+## sourcify-database@2.2.1 - 2025-02-18
+
+- Make Dune namespace configurable
+
+## sourcify-database@2.2.0 - 2025-02-06
+
+- Add Dune upload script
+- Reorganize database migrations
+
+## sourcify-database@2.1.0 - 2025-01-08
+
+- Add missing creation-tx backfill scripts
+
+## sourcify-database@2.0.2 - 2024-12-11
+
+- Update dependencies
+
+## sourcify-database@2.0.1 - 2024-10-29
+
+- Update packages
+
+## sourcify-database@2.0.0 - 2024-10-14
+
+- Update the Sourcify Database to incorporate the new Verifier Alliance Database schema
+- Support for custom schema name in Postgres
+- Add the script to migrate the database from v0 to v1
+
+## sourcify-database@1.3.0 - 2024-08-29
+
+- Added constraints for `compiled_contracts` table in migrations
+- Updated the script:
+  - Added `single-sync` command to send one contract
+  - Added `import-creator-tx` to import all contracts with a creator-tx-hash.txt file. Needed for contracts that failed to verify with creation tx durign the sync
+  - Refactor some parts
+  - Change deprecated chains sync code
+
+## sourcify-database@1.2.0 - 2024-07-25
+
+- Update README on how to run the migrations
+- add prod. env to the database migrations
+- Add new migrations to accomodate the changes in the VerA database
+- Update dependencies
+- Update the script's import-repo command to insert the contracts read from the FS to the Database in batches instead of one-by-one
+
+## sourcify-database@1.1.1 - 2024-05-14
+
+- bump version
+
+## sourcify-database@1.1.0 - 2024-04-23
+
+- Add session table to migrations
+
+## sourcify-database@1.0.3 - 2024-04-04
+
+- Add schema to support postgresql based session (commented)
+
+## sourcify-database@1.0.2 - 2024-03-14
+
+- Fix `fsevents` to the `optionalDependencies` for Linux builds.
+
+## sourcify-database@1.0.1 - 2024-02-26
+
+- Fix migration scripts
+
+## sourcify-database@1.0.0 - 2024-02-22
+
+- Initial commit

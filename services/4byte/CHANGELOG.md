@@ -1,0 +1,91 @@
+## sourcify-4byte@1.3.1 - 2026-11-03
+
+- chore: bump Node to 22.23.4 for Brotli RCE CVE-2026-111497 (Node2Shell) (#3040)
+- Update dependencies
+
+## sourcify-4byte@1.3.0 - 2026-10-21
+
+- feat(4byte): live signature stats from a daily BigQuery base, and /recent (#3033)
+
+## sourcify-4byte@1.2.0 - 2026-10-05
+
+- feat(4byte): set Cache-Control on signature lookup responses (#2995)
+- Update dependencies
+
+## sourcify-4byte@1.1.17 - 2026-09-22
+
+- update dependencies
+
+## sourcify-4byte@1.1.16 - 2026-08-20
+
+- update dependencies
+- security: pin CI images and actions by digest (#2915)
+
+## sourcify-4byte@1.1.15 - 2026-07-06
+
+- update dependencies
+
+## sourcify-4byte@1.1.14 - 2026-06-16
+
+- Update dependencies
+
+## sourcify-4byte@1.1.13 - 2026-05-27
+
+- Update dependencies
+
+## sourcify-4byte@1.1.12 - 2026-05-21
+
+- Update dependencies
+
+## sourcify-4byte@1.1.11 - 2026-04-14
+
+- update dependencies and docker base image
+
+## sourcify-4byte@1.1.10 - 2026-03-30
+
+- Update dependencies
+
+## sourcify-4byte@1.1.9 - 2026-03-17
+
+- update dependencies
+
+## sourcify-4byte@1.1.8 - 2026-03-02
+
+- update dependencies
+
+## sourcify-4byte@1.1.7 - 2026-01-20
+
+- Update dependencies
+
+## sourcify-4byte@1.1.6 - 2026-01-07
+
+- update dependencies
+
+## sourcify-4byte@1.1.5 - 2025-12-15
+
+- Update dependencies
+
+## sourcify-4byte@1.1.4 - 2025-11-19
+
+- update dependencies
+- Turn @typescript-eslint/consistent-type-imports rule on (#2496)
+
+## sourcify-4byte@1.1.3 - 2025-11-04
+
+- update dependencies
+
+## sourcify-4byte@1.1.2 - 2025-10-30
+
+- Add canonical signature (#2471)
+
+## sourcify-4byte@1.1.1 - 2025-10-28
+
+- update dependencies
+
+## sourcify-4byte@1.1.0 - 2025-10-16
+
+- Create 4byte service (#2402)
+  - Creates a separate 4byte service, removing the endpoints in Sourcify server and instead publishing a new standalone service.
+- Update 4byte after bulk import and implementing /import endpoint (#2443)
+  - Implements `/import` endpoint to submit new signatures, not associated to verified contracts.
+- Fix openchain compatiblity (#2447)

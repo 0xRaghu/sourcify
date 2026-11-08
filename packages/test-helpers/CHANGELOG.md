@@ -1,0 +1,33 @@
+## @ethereum-sourcify/test-helpers@1.0.7 - 2026-11-03
+
+- Update dependencies
+
+## @ethereum-sourcify/test-helpers@1.0.6 - 2026-10-21
+
+- update dependencies
+
+## @ethereum-sourcify/test-helpers@1.0.5 - 2026-10-05
+
+- Update dependencies
+
+## @ethereum-sourcify/test-helpers@1.0.4 - 2026-08-20
+
+- update dependencies
+
+## @ethereum-sourcify/test-helpers@1.0.3 - 2026-07-06
+
+- update dependencies
+
+## @ethereum-sourcify/test-helpers@1.0.2 - 2026-06-16
+
+- Update dependencies
+
+## @ethereum-sourcify/test-helpers@1.0.1 - 2026-05-27
+
+- Update dependencies
+
+## @ethereum-sourcify/test-helpers@1.0.0 - 2026-05-21
+
+- Create test helpers package
+- Upgrade lerna and hardhat to major versions and override packages in package.json
+  #2783

@@ -1,0 +1,925 @@
+import type { AbstractCompilation } from '../Compilation/AbstractCompilation';
+import { findContractInCompilerOutput } from '../Compilation/AbstractCompilation';
+import { logDebug, logInfo, logWarn } from '../logger';
+import type { SourcifyChain } from '../SourcifyChain/SourcifyChain';
+import { lt } from 'semver';
+import type {
+  SolidityDecodedObject,
+  VyperDecodedObject,
+} from '@ethereum-sourcify/bytecode-utils';
+import {
+  splitAuxdata,
+  AuxdataStyle,
+  decode as decodeBytecode,
+} from '@ethereum-sourcify/bytecode-utils';
+import type {
+  CompiledContractCborAuxdata,
+  ISolidityCompiler,
+  StringMap,
+} from '../Compilation/CompilationTypes';
+import semver from 'semver';
+import { isSolarVersion } from '@ethereum-sourcify/compilers-types';
+
+import type { Transformation, TransformationValues } from './Transformations';
+import {
+  extractAuxdataTransformation,
+  extractCallProtectionTransformation,
+  extractConstructorArgumentsTransformation,
+  extractImmutablesTransformation,
+  extractLibrariesTransformation,
+} from './Transformations';
+import type {
+  BytecodeMatchingResult,
+  VerificationExport,
+  VerificationStatus,
+} from './VerificationTypes';
+import { SolidityBugType, VerificationError } from './VerificationTypes';
+import type {
+  VyperOutputContract,
+  ImmutableReferences,
+  SolidityOutputContract,
+  FeOutputContract,
+  SoliditySettings,
+  SolidityJsonInput,
+  Metadata,
+} from '@ethereum-sourcify/compilers-types';
+import { SolidityMetadataContract } from '../Validation/SolidityMetadataContract';
+import { SolidityCompilation } from '../Compilation/SolidityCompilation';
+import type { VyperCompilation } from '../Compilation/VyperCompilation';
+
+function auxdataLacksMetadataOrIntegrityHash(
+  auxdata: CompiledContractCborAuxdata[string],
+  compilation: AbstractCompilation,
+): boolean {
+  try {
+    if (
+      compilation.auxdataStyle === AuxdataStyle.SOLIDITY &&
+      semver.gte(compilation.compilerVersion, '0.4.7')
+    ) {
+      const { ipfs, bzzr0, bzzr1 } = decodeBytecode(
+        auxdata.value,
+        compilation.auxdataStyle,
+      ) as SolidityDecodedObject;
+      return ipfs === undefined && bzzr0 === undefined && bzzr1 === undefined;
+    } else if (
+      compilation.auxdataStyle === AuxdataStyle.VYPER &&
+      semver.gte(
+        (compilation as VyperCompilation).compilerVersionCompatibleWithSemver,
+        '0.4.1',
+      )
+    ) {
+      const { integrity } = decodeBytecode(
+        auxdata.value,
+        compilation.auxdataStyle,
+      ) as VyperDecodedObject;
+      return integrity === undefined;
+    } else {
+      return true;
+    }
+  } catch {
+    return true;
+  }
+}
+
+export class Verification {
+  // Bytecodes
+  private _onchainRuntimeBytecode?: string;
+  private _onchainCreationBytecode?: string;
+
+  // Transformations
+  private runtimeTransformations: Transformation[] = [];
+  private creationTransformations: Transformation[] = [];
+  private runtimeTransformationValues: TransformationValues = {};
+  private creationTransformationValues: TransformationValues = {};
+
+  // Match status
+  private runtimeMatch: VerificationStatus = null;
+  private creationMatch: VerificationStatus = null;
+  private runtimeLibraryMap?: StringMap;
+  private creationLibraryMap?: StringMap;
+  private blockNumber?: number;
+  private txIndex?: number;
+  private deployer?: string;
+
+  constructor(
+    public compilation: AbstractCompilation,
+    private sourcifyChain: SourcifyChain,
+    public address: string,
+    private creatorTxHash?: string,
+  ) {}
+
+  async verify({
+    forceEmscripten = false,
+  }: { forceEmscripten?: boolean } = {}): Promise<void> {
+    logInfo('Verifying contract', {
+      address: this.address,
+      chainId: this.sourcifyChain.chainId,
+    });
+
+    try {
+      this._onchainRuntimeBytecode = await this.sourcifyChain.getBytecode(
+        this.address,
+      );
+    } catch (e: any) {
+      throw new VerificationError({
+        code: 'cannot_fetch_bytecode',
+        address: this.address,
+        chainId: this.sourcifyChain.chainId.toString(),
+      });
+    }
+
+    if (this.onchainRuntimeBytecode === '0x') {
+      throw new VerificationError({
+        code: 'contract_not_deployed',
+        address: this.address,
+        chainId: this.sourcifyChain.chainId.toString(),
+      });
+    }
+
+    // Compile the contract
+    await this.compilation.compile(forceEmscripten);
+
+    // Before proceeding with the verification, check if the onchain auxdata doesn't match the recompiled auxdata
+    // If it doesn't, we try to find perfect metadata and recompile the contract with the new sources
+    await this.checkForPerfectMetadata(forceEmscripten);
+
+    const compiledRuntimeBytecode = this.compilation.runtimeBytecode;
+    const compiledCreationBytecode = this.compilation.creationBytecode;
+
+    if (compiledRuntimeBytecode === '0x' || compiledCreationBytecode === '0x') {
+      throw new VerificationError({
+        code: 'compiled_bytecode_is_zero',
+      });
+    }
+
+    // Early bytecode length check:
+    // - For Solidity: bytecode lengths must match exactly, except for extra file input bug or no metadata onchain
+    // - For Vyper: recompiled bytecode must not be longer than onchain as Vyper appends immutables at deployment
+    // We cannot do an early check for creation bytecode length mismatch because
+    // creation bytecode length can differ due to constructor arguments being appended at the end
+    if (
+      this.compilation.language === 'Vyper' &&
+      compiledRuntimeBytecode.length > this.onchainRuntimeBytecode.length
+    ) {
+      throw new VerificationError({
+        code: 'bytecode_length_mismatch',
+      });
+    }
+    if (
+      this.compilation.language === 'Solidity' &&
+      compiledRuntimeBytecode.length !== this.onchainRuntimeBytecode.length
+    ) {
+      // Before throwing the bytecode length mismatch error, check for Solidity extra file input bug
+      const solidityBugType = isSolarVersion(this.compilation.compilerVersion)
+        ? SolidityBugType.NONE
+        : this.handleSolidityExtraFileInputBug();
+      if (solidityBugType === SolidityBugType.EXTRA_FILE_INPUT_BUG) {
+        throw new VerificationError({
+          code: 'extra_file_input_bug',
+        });
+      }
+
+      // Before throwing the bytecode length mismatch error, check if onchain bytecode has no Solidity metadata
+      // If the onchain bytecode has no metadata, we can still verify it as a partial match
+      // See https://github.com/argotorg/sourcify/issues/2374
+      let noSolidityMetadataInOnchainBytecode = false;
+      try {
+        const decodedOnchainAuxdata = decodeBytecode(
+          this.onchainRuntimeBytecode,
+          AuxdataStyle.SOLIDITY,
+        );
+        if (
+          !decodedOnchainAuxdata.ipfs &&
+          !decodedOnchainAuxdata.bzzr0 &&
+          !decodedOnchainAuxdata.bzzr1
+        ) {
+          noSolidityMetadataInOnchainBytecode = true;
+        }
+      } catch (err: any) {
+        // If decoding fails, assume no metadata is present
+        noSolidityMetadataInOnchainBytecode = true;
+      }
+      // If there is no Solidity metadata in onchain bytecode, we can proceed with verification as a partial match
+      if (!noSolidityMetadataInOnchainBytecode) {
+        throw new VerificationError({
+          code: 'bytecode_length_mismatch',
+        });
+      }
+    }
+
+    // We need to manually generate the auxdata positions because they are not automatically produced during compilation
+    // Read more: https://docs.sourcify.dev/blog/finding-auxdatas-in-bytecode/
+    try {
+      await this.compilation.generateCborAuxdataPositions();
+    } catch {
+      // Continue verification even if cbor auxdata positions cannot be generated
+      // In case of an auxdata transformation, the error will be thrown later
+    }
+
+    // Try to match onchain runtime bytecode with compiled runtime bytecode
+    try {
+      logDebug('Matching with runtime bytecode', {
+        chain: this.sourcifyChain.chainId,
+        address: this.address,
+      });
+      await this.matchWithRuntimeBytecode();
+    } catch (e: any) {
+      logWarn('Error matching with runtime bytecode', {
+        chain: this.sourcifyChain.chainId,
+        address: this.address,
+        error: e.message,
+      });
+    }
+
+    // The solc bug workarounds don't apply to Solar
+    if (
+      this.compilation.language === 'Solidity' &&
+      !isSolarVersion(this.compilation.compilerVersion) &&
+      this.runtimeMatch === null
+    ) {
+      // Handle Solidity extra file input bug
+      let solidityBugType = this.handleSolidityExtraFileInputBug();
+      if (solidityBugType === SolidityBugType.EXTRA_FILE_INPUT_BUG) {
+        throw new VerificationError({
+          code: 'extra_file_input_bug',
+        });
+      }
+
+      // Handle Solidity IR output ordering bug
+      solidityBugType =
+        await this.handleSolidityIROutputOrderingBug(forceEmscripten);
+      if (solidityBugType === SolidityBugType.IR_OUTPUT_ORDERING_BUG) {
+        return await this.verify({ forceEmscripten: true });
+      }
+    }
+
+    // Check if the creation transaction hash is available and corrisponds to the creation transaction of this contract
+    // If it is, we fetch the onchain creation bytecode and other creation information
+    if (this.creatorTxHash) {
+      try {
+        // Get creation transaction data
+        const creatorTx = await this.sourcifyChain.getTx(this.creatorTxHash);
+        this.blockNumber = creatorTx.blockNumber || undefined;
+        this.deployer = creatorTx.from;
+
+        const { creationBytecode, txReceipt } =
+          await this.sourcifyChain.getContractCreationBytecodeAndReceipt(
+            this.address,
+            this.creatorTxHash,
+            creatorTx,
+          );
+        this._onchainCreationBytecode = creationBytecode;
+        this.txIndex = txReceipt.index;
+      } catch (e: any) {
+        logWarn('Error extracting creation tx data', {
+          chain: this.sourcifyChain.chainId,
+          address: this.address,
+          creatorTxHash: this.creatorTxHash,
+          error: e.message,
+        });
+        this.creatorTxHash = undefined;
+        this.blockNumber = undefined;
+        this.deployer = undefined;
+      }
+    }
+
+    // If we found the onchain creation bytecode, we try to match it with the compiled creation bytecode
+    if (this._onchainCreationBytecode) {
+      logDebug('Matching with creation tx', {
+        chain: this.sourcifyChain.chainId,
+        address: this.address,
+        creatorTxHash: this.creatorTxHash,
+      });
+      try {
+        await this.matchWithCreationTx();
+      } catch (e: any) {
+        logWarn('Error matching with creation tx', {
+          chain: this.sourcifyChain.chainId,
+          address: this.address,
+          creatorTxHash: this.creatorTxHash,
+          error: e.message,
+        });
+      }
+    }
+
+    if (this.creationMatch !== null || this.runtimeMatch !== null) {
+      // Remove unused sources so they don't get stored with the verified contract
+      // See https://github.com/argotorg/sourcify/issues/2363
+      await this.removeUnusedSources(forceEmscripten);
+
+      logInfo('Verified contract', {
+        address: this.address,
+        chainId: this.sourcifyChain.chainId,
+        runtimeMatch: this.runtimeMatch,
+        creationMatch: this.creationMatch,
+      });
+      return;
+    }
+
+    throw new VerificationError({
+      code: 'no_match',
+    });
+  }
+
+  private async checkForPerfectMetadata(forceEmscripten: boolean) {
+    if (this.compilation.metadata === undefined) {
+      return;
+    }
+    try {
+      const [, onchainAuxdata] = splitAuxdata(
+        this.onchainRuntimeBytecode,
+        AuxdataStyle.SOLIDITY,
+      );
+      const [, recompiledAuxdata] = splitAuxdata(
+        this.compilation.runtimeBytecode,
+        AuxdataStyle.SOLIDITY,
+      );
+      if (
+        this.compilation.language === 'Solidity' &&
+        onchainAuxdata !== recompiledAuxdata
+      ) {
+        const solidityMetadataContract = new SolidityMetadataContract(
+          this.compilation.metadata,
+          Object.keys(this.compilation.jsonInput.sources).map((source) => ({
+            path: source,
+            content: this.compilation.jsonInput.sources[source].content,
+          })),
+        );
+        if (
+          await solidityMetadataContract.tryToFindPerfectMetadata(
+            this.onchainRuntimeBytecode,
+          )
+        ) {
+          this.compilation = await solidityMetadataContract.createCompilation(
+            this.compilation.compiler as ISolidityCompiler,
+          );
+          await this.compilation.compile(forceEmscripten);
+        }
+      }
+    } catch (e: any) {
+      // If we fail to find perfect metadata, we proceed with the verification
+    }
+  }
+
+  /**
+   * Removes input sources that are not listed in the target's metadata.
+   * Only runs after a successful match, so failed verifications never pay
+   * for it. When the compiler settings make the extra file input bug possible,
+   * unused sources can change the bytecode, so in that case they are only
+   * removed after checking that the bytecode stays the same without them.
+   * See https://github.com/argotorg/sourcify/issues/2363
+   */
+  private async removeUnusedSources(forceEmscripten: boolean): Promise<void> {
+    const compilation = this.compilation;
+    if (
+      !(compilation instanceof SolidityCompilation) ||
+      compilation.language !== 'Solidity'
+    ) {
+      return;
+    }
+
+    const metadataSources = compilation.metadata?.sources;
+    if (!metadataSources) {
+      return;
+    }
+
+    const inputSources = compilation.jsonInput.sources;
+    const unusedPaths = Object.keys(inputSources).filter(
+      (path) => !(path in metadataSources),
+    );
+    // Most verifications have no unused sources and stop here
+    if (unusedPaths.length === 0) {
+      return;
+    }
+    // A check compilation is only needed when the unused sources could have
+    // affected the bytecode (extra file input bug), which requires the
+    // optimizer to be enabled. From 0.8.22 on we additionally require a custom
+    // Yul optimizer step sequence: unrelated sources shift the names solc
+    // generates in the Yul IR, and only a hand-picked sequence skips the passes
+    // that would otherwise normalize that difference away.
+    // See https://github.com/argotorg/solidity/issues/15686#issuecomment-5103812547
+    const settings = compilation.jsonInput.settings;
+    const usesCustomYulOptimizerSteps =
+      settings.optimizer?.details?.yulDetails?.optimizerSteps !== undefined;
+    // Solar does not have the extra-file-input bug of old solc. Without this
+    // guard, semver.lt would read the solc part of the Solar version.
+    const mayHitExtraFileInputBug =
+      !isSolarVersion(compilation.compilerVersion) &&
+      settings.optimizer?.enabled &&
+      (semver.lt(compilation.compilerVersion, '0.8.22') ||
+        usesCustomYulOptimizerSteps);
+    if (mayHitExtraFileInputBug) {
+      try {
+        // Compile without the unused sources, only outputting the bytecodes
+        const checkJsonInput: SolidityJsonInput = {
+          ...compilation.jsonInput,
+          sources: Object.keys(metadataSources).reduce(
+            (sources, path) => {
+              sources[path] = inputSources[path];
+              return sources;
+            },
+            {} as SolidityJsonInput['sources'],
+          ),
+          settings: {
+            ...compilation.jsonInput.settings,
+            outputSelection: {
+              '*': {
+                '*': ['evm.bytecode.object', 'evm.deployedBytecode.object'],
+              },
+            },
+          },
+        };
+        const checkOutput = await compilation.compiler.compile(
+          compilation.compilerVersion,
+          checkJsonInput,
+          forceEmscripten,
+        );
+        const checkContract = findContractInCompilerOutput(
+          checkOutput,
+          compilation.compilationTarget,
+        ) as SolidityOutputContract;
+        if (
+          `0x${checkContract.evm.bytecode.object}` !==
+            compilation.creationBytecode ||
+          `0x${checkContract.evm.deployedBytecode?.object}` !==
+            compilation.runtimeBytecode
+        ) {
+          logInfo(
+            'Unused sources affect the bytecode (extra file input bug), keeping all sources',
+            {
+              address: this.address,
+              chainId: this.sourcifyChain.chainId,
+              unusedPaths,
+            },
+          );
+          return;
+        }
+      } catch (e: any) {
+        logWarn('Error checking unused sources, keeping all sources', {
+          address: this.address,
+          chainId: this.sourcifyChain.chainId,
+          unusedPaths,
+          error: e.message,
+        });
+        return;
+      }
+    }
+
+    for (const path of unusedPaths) {
+      delete compilation.jsonInput.sources[path];
+      delete compilation.compilerOutput?.sources?.[path];
+    }
+    logInfo('Removed unused sources from the compilation', {
+      address: this.address,
+      chainId: this.sourcifyChain.chainId,
+      unusedPaths,
+    });
+  }
+
+  handleSolidityExtraFileInputBug(): SolidityBugType {
+    // Case when extra unused files in compiler input cause different bytecode
+    // See issues:
+    //   https://github.com/argotorg/sourcify/issues/618
+    //   https://github.com/argotorg/solidity/issues/14250
+    //   https://github.com/argotorg/solidity/issues/14494
+    const [, deployedAuxdata] = splitAuxdata(
+      this.onchainRuntimeBytecode,
+      AuxdataStyle.SOLIDITY,
+    );
+    const [, recompiledAuxdata] = splitAuxdata(
+      this.compilation.runtimeBytecode,
+      AuxdataStyle.SOLIDITY,
+    );
+    // Metadata hashes match but bytecodes don't match.
+    // Guard: both auxdata must be defined (i.e. CBOR metadata actually exists in both bytecodes).
+    // Pre-0.4.7 contracts have no CBOR metadata, so splitAuxdata returns undefined for index [1].
+    // Without this guard, undefined === undefined would incorrectly trigger the bug diagnosis.
+    // See: https://github.com/argotorg/sourcify/issues/2729
+    if (
+      deployedAuxdata !== undefined &&
+      recompiledAuxdata !== undefined &&
+      deployedAuxdata === recompiledAuxdata &&
+      (this.compilation.jsonInput.settings as SoliditySettings).optimizer
+        ?.enabled
+    ) {
+      return SolidityBugType.EXTRA_FILE_INPUT_BUG;
+    }
+    return SolidityBugType.NONE;
+  }
+
+  async handleSolidityIROutputOrderingBug(
+    forceEmscripten: boolean,
+  ): Promise<SolidityBugType> {
+    // Handle Solidity specific verification bug cases
+    const settings = this.compilation.jsonInput.settings as SoliditySettings;
+
+    // Handle when <0.8.21 and with viaIR and with optimizer disabled
+    // See issues:
+    //   https://github.com/argotorg/sourcify/issues/1088
+    if (
+      !forceEmscripten && // Enter this case only if we are not already forcing Emscripten
+      lt(this.compilation.compilerVersion, '0.8.21') &&
+      !settings.optimizer?.enabled &&
+      settings.viaIR
+    ) {
+      logInfo('Force Emscripten compiler', {
+        address: this.address,
+        chainId: this.sourcifyChain.chainId,
+      });
+
+      // Try to verify again with Emscripten
+      return SolidityBugType.IR_OUTPUT_ORDERING_BUG;
+    }
+
+    return SolidityBugType.NONE;
+  }
+
+  private async matchBytecodes(
+    isCreation: boolean,
+    populatedRecompiledBytecode: string,
+  ): Promise<BytecodeMatchingResult> {
+    // Here we use bytecodes from the context because they are already processed
+    const onchainBytecode = isCreation
+      ? this.onchainCreationBytecode
+      : this.onchainRuntimeBytecode;
+
+    const cborAuxdata = isCreation
+      ? this.compilation.creationBytecodeCborAuxdata
+      : this.compilation.runtimeBytecodeCborAuxdata;
+
+    const linkReferences = isCreation
+      ? this.compilation.creationLinkReferences
+      : this.compilation.runtimeLinkReferences;
+
+    const result: BytecodeMatchingResult = {
+      match: null,
+      transformations: [],
+      transformationValues: {},
+      populatedRecompiledBytecode,
+    };
+
+    // Library transformations can be in both the runtime bytecode and creation bytecode, hence done here in `matchBytecodes` method.
+    const librariesTransformationResult = extractLibrariesTransformation(
+      populatedRecompiledBytecode,
+      onchainBytecode,
+      linkReferences,
+      this.compilation.compilerVersion,
+    );
+    if (librariesTransformationResult.inconsistentLibraries) {
+      logWarn('Library linked to multiple addresses, refusing match', {
+        address: this.address,
+        chainId: this.sourcifyChain.chainId,
+        isCreation,
+        libraries: librariesTransformationResult.inconsistentLibraries,
+      });
+      return result;
+    }
+    const libraryMap = librariesTransformationResult.libraryMap;
+    populatedRecompiledBytecode =
+      librariesTransformationResult.populatedRecompiledBytecode;
+
+    // Direct bytecode match
+    const doBytecodesMatch = isCreation
+      ? onchainBytecode.startsWith(populatedRecompiledBytecode)
+      : populatedRecompiledBytecode === onchainBytecode;
+
+    if (doBytecodesMatch) {
+      // If there is perfect match but auxdata doesn't contain any metadata / integrity hash, return partial match
+      if (
+        !cborAuxdata ||
+        Object.keys(cborAuxdata).length === 0 ||
+        Object.values(cborAuxdata).some((auxdata) =>
+          auxdataLacksMetadataOrIntegrityHash(auxdata, this.compilation),
+        )
+      ) {
+        result.match = 'partial';
+      } else {
+        result.match = 'perfect';
+      }
+
+      result.libraryMap = libraryMap;
+      result.transformations = librariesTransformationResult.transformations;
+      result.transformationValues =
+        librariesTransformationResult.transformationValues;
+      return result;
+    }
+
+    // If bytecodes don't match and no auxdata to ignore, return null
+    if (!cborAuxdata || Object.keys(cborAuxdata).length === 0) {
+      return result;
+    }
+
+    const auxdataTransformationResult = extractAuxdataTransformation(
+      populatedRecompiledBytecode,
+      onchainBytecode,
+      cborAuxdata,
+    );
+
+    result.populatedRecompiledBytecode =
+      auxdataTransformationResult.populatedRecompiledBytecode;
+
+    const doPopulatedBytecodesMatch = isCreation
+      ? onchainBytecode.startsWith(
+          auxdataTransformationResult.populatedRecompiledBytecode,
+        )
+      : auxdataTransformationResult.populatedRecompiledBytecode ===
+        onchainBytecode;
+
+    if (doPopulatedBytecodesMatch) {
+      result.match = 'partial';
+      result.libraryMap = libraryMap;
+      result.transformations = [
+        ...result.transformations,
+        ...librariesTransformationResult.transformations,
+        ...auxdataTransformationResult.transformations,
+      ];
+      result.transformationValues = {
+        ...result.transformationValues,
+        ...librariesTransformationResult.transformationValues,
+        ...auxdataTransformationResult.transformationValues,
+      };
+    }
+
+    return result;
+  }
+
+  private async matchWithRuntimeBytecode() {
+    // Check if is a library with call protection
+    const callProtectionTransformationResult =
+      extractCallProtectionTransformation(
+        this.compilation.runtimeBytecode,
+        this.onchainRuntimeBytecode,
+        this.compilation.language,
+      );
+
+    // Handle immutable references
+    const immutablesTransformationResult = extractImmutablesTransformation(
+      callProtectionTransformationResult.populatedRecompiledBytecode,
+      this.onchainRuntimeBytecode,
+      this.compilation.immutableReferences,
+      this.compilation.auxdataStyle,
+    );
+
+    const matchBytecodesResult = await this.matchBytecodes(
+      false,
+      immutablesTransformationResult.populatedRecompiledBytecode,
+    );
+
+    this.runtimeTransformations = [
+      ...callProtectionTransformationResult.transformations,
+      ...immutablesTransformationResult.transformations,
+      ...matchBytecodesResult.transformations,
+    ];
+    this.runtimeTransformationValues = {
+      ...callProtectionTransformationResult.transformationValues,
+      ...immutablesTransformationResult.transformationValues,
+      ...matchBytecodesResult.transformationValues,
+    };
+
+    this.runtimeMatch = matchBytecodesResult.match;
+    this.runtimeLibraryMap = matchBytecodesResult.libraryMap;
+  }
+
+  private async matchWithCreationTx() {
+    const matchBytecodesResult = await this.matchBytecodes(
+      true,
+      this.compilation.creationBytecode,
+    );
+
+    if (
+      matchBytecodesResult.match === 'partial' ||
+      matchBytecodesResult.match === 'perfect'
+    ) {
+      const constructorTransformationResult =
+        extractConstructorArgumentsTransformation(
+          matchBytecodesResult.populatedRecompiledBytecode,
+          this.onchainCreationBytecode,
+          this.compilation.contractCompilerOutput?.abi || [],
+        );
+      this.creationTransformations = [
+        ...matchBytecodesResult.transformations,
+        ...constructorTransformationResult.transformations,
+      ];
+      this.creationTransformationValues = {
+        ...matchBytecodesResult.transformationValues,
+        ...constructorTransformationResult.transformationValues,
+      };
+      this.creationMatch = matchBytecodesResult.match;
+      this.creationLibraryMap = matchBytecodesResult.libraryMap;
+    }
+  }
+
+  get status() {
+    return {
+      runtimeMatch: this.runtimeMatch,
+      creationMatch: this.creationMatch,
+    };
+  }
+
+  get onchainRuntimeBytecode() {
+    if (!this._onchainRuntimeBytecode) {
+      throw new VerificationError({
+        code: 'onchain_runtime_bytecode_not_available',
+      });
+    }
+    return this._onchainRuntimeBytecode;
+  }
+
+  get onchainCreationBytecode() {
+    if (!this._onchainCreationBytecode) {
+      throw new VerificationError({
+        code: 'onchain_creation_bytecode_not_available',
+      });
+    }
+    return this._onchainCreationBytecode;
+  }
+
+  get transformations() {
+    return {
+      runtime: {
+        list: this.runtimeTransformations,
+        values: this.runtimeTransformationValues,
+      },
+      creation: {
+        list: this.creationTransformations,
+        values: this.creationTransformationValues,
+      },
+    };
+  }
+
+  get deploymentInfo() {
+    return {
+      blockNumber: this.blockNumber,
+      txIndex: this.txIndex,
+      deployer: this.deployer,
+      txHash: this.creatorTxHash,
+    };
+  }
+
+  get libraryMap() {
+    return {
+      runtime: this.runtimeLibraryMap,
+      creation: this.creationLibraryMap,
+    };
+  }
+
+  get chainId() {
+    return this.sourcifyChain.chainId;
+  }
+
+  /**
+   * Create a plain serializable object from the verification result
+   */
+  export(): VerificationExport {
+    let onchainRuntimeBytecode: string | undefined;
+    try {
+      onchainRuntimeBytecode = this.onchainRuntimeBytecode;
+    } catch {
+      // pass
+    }
+    let onchainCreationBytecode: string | undefined;
+    try {
+      onchainCreationBytecode = this.onchainCreationBytecode;
+    } catch {
+      // pass
+    }
+
+    let compilerOutputSources: Record<string, { id: number }> | undefined;
+    if (this.compilation.compilerOutput?.sources) {
+      if (
+        this.compilation.language === 'Solidity' &&
+        semver.lt(this.compilation.compilerVersion, '0.3.6')
+      ) {
+        // In Solidity versions < 0.3.6 there is no id in sources
+        compilerOutputSources = undefined;
+      } else {
+        compilerOutputSources = {};
+        for (const source of Object.keys(
+          this.compilation.compilerOutput.sources,
+        )) {
+          const id = this.compilation.compilerOutput.sources[source].id;
+          compilerOutputSources[source] = {
+            // In older solidity versions, source ids were strings, so we parse them to numbers
+            id: typeof id === 'number' ? id : parseInt(id, 10),
+          };
+        }
+      }
+    }
+
+    let contractCompilerOutput:
+      | SolidityOutputContract
+      | VyperOutputContract
+      | FeOutputContract
+      | undefined;
+    try {
+      contractCompilerOutput = this.compilation.contractCompilerOutput;
+    } catch {
+      // pass
+    }
+
+    let recompiledRuntimeBytecode: string | undefined;
+    try {
+      recompiledRuntimeBytecode = this.compilation.runtimeBytecode;
+    } catch {
+      // pass
+    }
+
+    let recompiledCreationBytecode: string | undefined;
+    try {
+      recompiledCreationBytecode = this.compilation.creationBytecode;
+    } catch {
+      // pass
+    }
+
+    let runtimeBytecodeCborAuxdata: CompiledContractCborAuxdata | undefined;
+    try {
+      runtimeBytecodeCborAuxdata = this.compilation.runtimeBytecodeCborAuxdata;
+    } catch {
+      // pass
+    }
+
+    let creationBytecodeCborAuxdata: CompiledContractCborAuxdata | undefined;
+    try {
+      creationBytecodeCborAuxdata =
+        this.compilation.creationBytecodeCborAuxdata;
+    } catch {
+      // pass
+    }
+
+    let metadata: Metadata | undefined;
+    try {
+      metadata = this.compilation.metadata;
+    } catch {
+      // pass
+    }
+
+    let immutableReferences: ImmutableReferences | undefined;
+    try {
+      immutableReferences = this.compilation.immutableReferences;
+    } catch {
+      // pass
+    }
+
+    // Surface every top-level standard JSON input field used for compilation other than
+    // language/sources/settings (e.g. Vyper's `storage_layout_overrides`) so consumers can
+    // persist them.
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const { language, sources, settings, ...additionalInput } =
+      this.compilation.jsonInput;
+
+    return {
+      address: this.address,
+      chainId: this.chainId,
+      status: this.status,
+      onchainRuntimeBytecode,
+      onchainCreationBytecode,
+      transformations: this.transformations,
+      deploymentInfo: this.deploymentInfo,
+      libraryMap: this.libraryMap,
+      compilation: {
+        language: this.compilation.language,
+        compilationTarget: this.compilation.compilationTarget,
+        compilerVersion: this.compilation.compilerVersion,
+        sources: this.compilation.sources,
+        compilerOutput: { sources: compilerOutputSources },
+        contractCompilerOutput: {
+          abi: contractCompilerOutput?.abi ?? undefined,
+          userdoc: contractCompilerOutput?.userdoc,
+          devdoc: contractCompilerOutput?.devdoc,
+          storageLayout:
+            (contractCompilerOutput as SolidityOutputContract)?.storageLayout ||
+            (contractCompilerOutput as VyperOutputContract)?.layout
+              ?.storage_layout,
+          transientStorageLayout: (
+            contractCompilerOutput as SolidityOutputContract
+          )?.transientStorageLayout,
+          evm: {
+            bytecode: {
+              sourceMap: (
+                contractCompilerOutput as
+                  SolidityOutputContract | VyperOutputContract
+              )?.evm?.bytecode?.sourceMap,
+              linkReferences: (contractCompilerOutput as SolidityOutputContract)
+                ?.evm?.bytecode?.linkReferences,
+            },
+            deployedBytecode: {
+              sourceMap:
+                contractCompilerOutput?.evm?.deployedBytecode?.sourceMap,
+              linkReferences: (contractCompilerOutput as SolidityOutputContract)
+                ?.evm?.deployedBytecode?.linkReferences,
+            },
+          },
+        },
+        runtimeBytecode: recompiledRuntimeBytecode,
+        creationBytecode: recompiledCreationBytecode,
+        runtimeBytecodeCborAuxdata,
+        creationBytecodeCborAuxdata,
+        immutableReferences: immutableReferences,
+        metadata,
+        jsonInput: { settings },
+        ...(Object.keys(additionalInput).length > 0 ? { additionalInput } : {}),
+        compilationTime: this.compilation.compilationTime,
+      },
+    };
+  }
+}

@@ -1,22 +1,67 @@
 # Main config for workflows that will be conditionally run according to the parameters set at the initial config.yml. Only runs builds for paths that are changed.
-# Also contains workflows that will be run on all branches such as node tests and test-new-chain
+# Also contains workflows that will be run on all branches such as node tests
 version: 2.1
+
+orbs:
+  codecov: codecov/codecov@6.1.0
+  gcp-cli: circleci/gcp-cli@4.0.1
+
+## Commands via the gcp-cli orb to authenticate with GCP
+# From https://github.com/jtreutel/circleci-gcp-oidc-test/blob/master/.circleci/config.yml
+# And from the tutorial https://circleci.com/blog/openid-connect-identity-tokens/
+commands:
+  gcp-oidc-generate-cred-config-file:
+    description: "Authenticate with GCP using a CircleCI OIDC token."
+    parameters:
+      gcp_cred_config_file_path:
+        type: string
+        default: /home/circleci/gcp_cred_config.json
+      oidc_token_file_path:
+        type: string
+        default: /home/circleci/oidc_token.json
+    steps:
+      - run:
+          name: "Generate OIDC Token, Authentiace and save the gcp credential file"
+          command: |
+            # Store OIDC token in temp file
+            echo $CIRCLE_OIDC_TOKEN > << parameters.oidc_token_file_path >>
+            # Create a credential configuration for the generated OIDC ID Token
+            gcloud iam workload-identity-pools create-cred-config \
+                "projects/1019539084286/locations/global/workloadIdentityPools/circleci/providers/ethereum-org-circleci"\
+                --output-file="<< parameters.gcp_cred_config_file_path >>" \
+                --service-account=sourcify-cloud-run-deployer@sourcify-project.iam.gserviceaccount.com \
+                --credential-source-file=<< parameters.oidc_token_file_path >>
+
+  gcp-oidc-authenticate:
+    description: "Authenticate with GCP using a GCP credentials file."
+    parameters:
+      gcp_cred_config_file_path:
+        type: string
+        default: /home/circleci/gcp_cred_config.json
+    steps:
+      - run:
+          name: "Authenticate with GCP using the GCP credentials file"
+          command: |
+            # Configure gcloud to leverage the generated credential configuration
+            gcloud auth login --brief --cred-file "<< parameters.gcp_cred_config_file_path >>"
+            # Configure ADC
+            echo "export GOOGLE_APPLICATION_CREDENTIALS='<< parameters.gcp_cred_config_file_path >>'" | tee -a $BASH_ENV
 
 # Pipeline parameters to run module builds if related files have been changed
 parameters:
-  run-build-ipfs:
-    type: boolean
-    default: false
-  run-build-s3:
-    type: boolean
-    default: false
-  run-build-repository:
-    type: boolean
-    default: false
-  run-build-ui:
-    type: boolean
-    default: false
   run-build-server:
+    type: boolean
+    default: false
+  run-build-monitor:
+    type: boolean
+    default: false
+  run-build-4byte:
+    type: boolean
+    default: false
+  run-build-packages:
+    type: boolean
+    default: false
+  run-validate-database-schema:
     type: boolean
     default: false
 
@@ -26,191 +71,252 @@ parameters:
 aliases:
   - &build-base
     docker:
-      - image: cimg/base:2021.04
+      - image: cimg/base:2024.12@sha256:03c91d4730297b5af3718e1e81d43e210eae02be271ed7d370ccb3b994dad2bd
+    resource_class: xlarge
     parameters:
       run-build:
         type: boolean
         default: false
-    steps:
-      - when:
-          condition: << parameters.run-build >>
-          steps:
-            - checkout
-            - run:
-                name: "Pull Submodules"
-                command: |
-                  git submodule init
-                  git submodule update --remote
-            - setup_remote_docker:
-                version: 20.10.2
-            - run:
-                name: Build and push docker images
-                command: |
-                  ./scripts/build_and_publish_docker_images.sh
-      - run: echo 0
-  - &filter-base
-    filters:
-      branches:
-        only:
-          - staging
-          - master
-  - &monitor-e2e-base
-    working_directory: ~/source-verify
+      run-build-2:
+        type: boolean
+        default: false
     steps:
       - checkout
       - run:
-          name: install node-fetch dotenv
-          command: npm install node-fetch dotenv
+          name: "Pull Submodules"
+          command: |
+            git submodule init
+            git submodule update --remote
+      - setup_remote_docker:
+          version: default
+          docker_layer_caching: true
+      - run:
+          name: Build and push docker images
+          command: |
+            ./.circleci/scripts/build_and_publish_docker_images.sh
+      - persist_to_workspace:
+          root: workspace
+          paths:
+            - ./*
+      # If no build is needed, echo 0 to run as success
+      - run: echo 0
+  - &build-base-arm64
+    <<: *build-base
+    resource_class: arm.xlarge # override resource class
+  - &monitor-e2e-base
+    steps:
+      - run:
+          name: Avoid hosts unknown for github
+          command: mkdir ~/.ssh/ && echo -e "Host github.com\n\tStrictHostKeyChecking no\n" > ~/.ssh/config
+      - run:
+          name: checkout metacoin-source-verify
+          command: cd ~/project && git clone git@github.com:sourcifyeth/metacoin-source-verify.git
+      - run:
+          name: install
+          command: cd ~/project/metacoin-source-verify && npm ci
       - run:
           name: monitor test
-          command: ./scripts/monitor_ci.sh
+          command: cd ~/project/metacoin-source-verify && ./scripts/monitor_e2e.sh
           no_output_timeout: 30m
     docker:
-      - image: cimg/node:16.15
+      - image: cimg/node:22.23.4@sha256:097391155ab978930031757a857cf57278b907da8a994f278bbd27443c5018bf
+    resource_class: small
   - &verification-e2e-base
-    working_directory: ~/source-verify
     steps:
-      - checkout
       - run:
-          name: install dotenv
-          command: npm install dotenv
+          name: Avoid hosts unknown for github
+          command: mkdir ~/.ssh/ && echo -e "Host github.com\n\tStrictHostKeyChecking no\n" > ~/.ssh/config
+      - run:
+          name: checkout metacoin-source-verify
+          command: cd ~/project && git clone git@github.com:sourcifyeth/metacoin-source-verify.git
+      - run:
+          name: install
+          command: cd ~/project/metacoin-source-verify && npm ci
       - run:
           name: verification test
-          command: ./scripts/verification-e2e.sh
+          command: cd ~/project/metacoin-source-verify && ./scripts/verification_e2e.sh
     docker:
-      - image: cimg/node:16.15
-
-
+      - image: cimg/node:22.23.4@sha256:097391155ab978930031757a857cf57278b907da8a994f278bbd27443c5018bf
+    resource_class: small
 ####################
 #### WORKFLOWS #####
 ####################
 workflows:
   build_publish_deploy_docker:
-    # Run build_publish_deploy when on staging or master AND when a module is changed and something needs to be built and deployed. 
+    # Run build_publish_deploy when on staging or master AND when a module is changed and something needs to be built and deployed.
     when:
-      and:
-        - or: 
-          - equal: [ master, << pipeline.git.branch >> ]
-          - equal: [ staging, << pipeline.git.branch >> ]
-        - or:
-            [
-              << pipeline.parameters.run-build-ipfs >>,
-              << pipeline.parameters.run-build-repository >>,
-              << pipeline.parameters.run-build-s3 >>,
-              << pipeline.parameters.run-build-server >>,
-              << pipeline.parameters.run-build-ui >>,
-            ]
+      # and:
+      or:
+        - equal: [master, << pipeline.git.branch >>]
+        - equal: [staging, << pipeline.git.branch >>]
+        # - or:
+        #     [
+        #       << pipeline.parameters.run-build-server >>,
+        #       << pipeline.parameters.run-build-monitor >>,
+        #       << pipeline.parameters.run-build-packages >>,
+        #       << pipeline.parameters.run-build-ui >>,
+        #     ]
     jobs:
-      - tests-node-v16
-      - npm-publish:
-          filters:
-            branches:
-              only:
-                - master
+      - build-and-lint
+      - test-bytecode-utils:
+          requires: [build-and-lint]
+      - test-compilers:
+          requires: [build-and-lint]
+      - test-lib-sourcify:
+          requires: [build-and-lint]
+      - test-monitor:
+          requires: [build-and-lint]
+      - test-server:
+          requires: [build-and-lint]
+      - test-4byte:
+          requires: [build-and-lint]
+      - test-creation-tx-apis:
+          requires: [build-and-lint]
+      # TODO: run-build options are not taking affect. We build them always.
+      - build-push-monitor-amd64:
+          run-build: << pipeline.parameters.run-build-monitor >>
+          run-build-2: << pipeline.parameters.run-build-packages >> # monitor depends on packages
+      - build-push-server-amd64:
+          run-build: << pipeline.parameters.run-build-server >>
+          run-build-2: << pipeline.parameters.run-build-packages >> # server depends on packages
+      - build-push-4byte-amd64:
+          run-build: << pipeline.parameters.run-build-4byte >>
+          run-build-2: false # 4byte does not depend on packages
+      - build-push-monitor-arm64:
+          run-build: << pipeline.parameters.run-build-monitor >>
+          run-build-2: << pipeline.parameters.run-build-packages >> # monitor depends on packages
+      - build-push-server-arm64:
+          run-build: << pipeline.parameters.run-build-server >>
+          run-build-2: << pipeline.parameters.run-build-packages >> # server depends on packages
+      - build-push-4byte-arm64:
+          run-build: << pipeline.parameters.run-build-4byte >>
+          run-build-2: false # 4byte does not depend on packages
+      - publish-multiarch-images:
           requires:
-            - tests-node-v16
-      - build-push-ipfs:
-          run-build: << pipeline.parameters.run-build-ipfs >>
-      # Always build monitor if there's a change in the server
-      - build-push-monitor:
-          run-build: << pipeline.parameters.run-build-server >>
-      - build-push-repository:
-          run-build: << pipeline.parameters.run-build-repository >>
-      - build-push-s3:
-          run-build: << pipeline.parameters.run-build-s3 >>
-      - build-push-server:
-          run-build: << pipeline.parameters.run-build-server >>
-      - build-push-ui:
-          run-build: << pipeline.parameters.run-build-ui >>
+            - build-push-monitor-amd64
+            - build-push-server-amd64
+            - build-push-4byte-amd64
+            - build-push-monitor-arm64
+            - build-push-server-arm64
+            - build-push-4byte-arm64
       - deploy:
           requires:
-            - build-push-ipfs
-            - build-push-monitor
-            - build-push-repository
-            - build-push-s3
-            - build-push-server
-            - build-push-ui
-      - monitor-e2e-goerli:
-          requires:
-            - deploy
+            - publish-multiarch-images
       - monitor-e2e-sepolia:
           requires:
             - deploy
-      - verification-e2e-goerli:
+      - monitor-e2e-hoodi:
           requires:
             - deploy
       - verification-e2e-sepolia:
           requires:
             - deploy
-  
-  # Tests workflow for not staging or master
-  tests:
+      - verification-e2e-hoodi:
+          requires:
+            - deploy
+  tests: # Tests workflow for not staging or master
     when:
-      and: 
+      and:
         - not:
-            equal: [ master, << pipeline.git.branch >> ]
-        - not: 
-            equal: [ staging, << pipeline.git.branch >> ]
+            equal: [master, << pipeline.git.branch >>]
+        - not:
+            equal: [staging, << pipeline.git.branch >>]
     jobs:
-      - tests-node-v16
-
-  # Has to run always. Can't regex filter on add-chain-{chainId} branch names see: https://stackoverflow.com/questions/55839004/circleci-regex-filtering-match-within-string
-  test-new-chain:
+      - build-and-lint
+      - test-bytecode-utils:
+          requires: [build-and-lint]
+      - test-compilers:
+          requires: [build-and-lint]
+      - test-lib-sourcify:
+          requires: [build-and-lint]
+      - test-monitor:
+          requires: [build-and-lint]
+      - test-server:
+          requires: [build-and-lint]
+      - test-4byte:
+          requires: [build-and-lint]
+      - test-creation-tx-apis:
+          requires: [build-and-lint]
+  database-schema-validation:
+    when: << pipeline.parameters.run-validate-database-schema >>
     jobs:
-      - test-new-chain
-
+      - validate-database-schema
 
 #######################
 ### JOB DEFINITIONS ###
 #######################
 jobs:
-  build-push-ipfs:
-    <<: *build-base
-    environment:
-      SERVICE: "ipfs"
-  build-push-monitor:
+  build-push-monitor-amd64:
     <<: *build-base
     environment:
       SERVICE: "monitor"
-  build-push-repository:
-    <<: *build-base
-    environment:
-      SERVICE: "repository"
-  build-push-s3:
-    <<: *build-base
-    environment:
-      SERVICE: "s3"
-  build-push-server:
+      DOCKER_BUILD_CONTEXT: "."
+      DOCKERFILE: "services/monitor/Dockerfile"
+  build-push-server-amd64:
     <<: *build-base
     environment:
       SERVICE: "server"
-  build-push-ui:
+      DOCKER_BUILD_CONTEXT: "."
+      DOCKERFILE: "services/server/Dockerfile"
+  build-push-4byte-amd64:
     <<: *build-base
     environment:
-      SERVICE: "ui"
-  deploy:
+      SERVICE: "4byte"
+      DOCKER_BUILD_CONTEXT: "."
+      DOCKERFILE: "services/4byte/Dockerfile"
+  # ARM64 builds
+  build-push-monitor-arm64:
+    <<: *build-base-arm64
+    environment:
+      SERVICE: "monitor"
+      DOCKER_BUILD_CONTEXT: "."
+      DOCKERFILE: "services/monitor/Dockerfile"
+  build-push-server-arm64:
+    <<: *build-base-arm64
+    environment:
+      SERVICE: "server"
+      DOCKER_BUILD_CONTEXT: "."
+      DOCKERFILE: "services/server/Dockerfile"
+  build-push-4byte-arm64:
+    <<: *build-base-arm64
+    environment:
+      SERVICE: "4byte"
+      DOCKER_BUILD_CONTEXT: "."
+      DOCKERFILE: "services/4byte/Dockerfile"
+  publish-multiarch-images:
     docker:
-      - image: cimg/base:2021.04
+      - image: cimg/base:2024.12@sha256:03c91d4730297b5af3718e1e81d43e210eae02be271ed7d370ccb3b994dad2bd
+    resource_class: small
     steps:
       - checkout
       - setup_remote_docker:
-          version: 20.10.2
-      - add_ssh_keys:
-          fingerprints:
-            - "a9:2f:97:c3:64:10:80:c7:8e:2f:db:f7:a3:4a:53:66"
+          version: docker23
       - run:
-          name: Deploy
-          no_output_timeout: 30m
+          name: Publish multiarch images
+          no_output_timeout: 5m
           command: |
-            ./scripts/deploy.sh
-  tests-node-v16:
+            ./.circleci/scripts/publish_multiarch_images.sh
+  deploy:
+    executor: gcp-cli/default
+    resource_class: small
+    steps:
+      - checkout
+      - attach_workspace:
+          at: workspace
+      # Deploy to GCP
+      - gcp-cli/install
+      - gcp-oidc-generate-cred-config-file
+      - gcp-oidc-authenticate
+      - run:
+          name: Deploy to GCP
+          no_output_timeout: 10m
+          command: |
+            ./.circleci/scripts/deploy_to_gcp.sh
+  build-and-lint:
     docker:
-      - image: cimg/node:16.15
-    working_directory: ~/source-verify
-    parameters:
-      run_coveralls:
-        type: boolean
-        default: false
+      - image: cimg/node:22.23.4@sha256:097391155ab978930031757a857cf57278b907da8a994f278bbd27443c5018bf
+    resource_class: medium
+    working_directory: ~/sourcify
     steps:
       - run:
           name: Versions
@@ -218,63 +324,278 @@ jobs:
       - checkout
       - run:
           name: install dependencies
-          command: npm install && npx lerna bootstrap
-      - run:
-          name: lint
-          command: npm run lint
-      - run:
-          name: tsc and test
-          command: npx lerna run build && npx lerna run test --stream
-      - run:
-          name: coverage
-          command: npm run cov:send
-  test-new-chain:
-    docker:
-      - image: cimg/node:16.15
-    working_directory: ~/source-verify
-    steps:
-      - checkout
-      - run:
-          name: install dependencies
-          command: npm install && npx lerna bootstrap
+          command: npm install
       - run:
           name: build
           command: npx lerna run build
       - run:
-          name: test new chain PR
-          command: ./scripts/test_new_chain_support.sh
-  monitor-e2e-goerli:
-    <<: *monitor-e2e-base
-    environment:
-      CHAIN_ID: 5
-      CHAIN_NAME: goerli
+          name: lint
+          command: npx lerna run check
+      - run:
+          name: init the database submodule
+          command: git submodule update --init
+      - persist_to_workspace:
+          root: ~/sourcify
+          paths:
+            - node_modules
+            - packages/*/node_modules
+            - packages/bytecode-utils/build
+            - packages/compilers/build
+            - packages/compilers-types/build
+            - packages/lib-sourcify/build
+            - services/*/node_modules
+            - services/server/dist
+            - services/monitor/dist
+            - services/4byte/dist
+            - services/database
+            - .git/modules
+  test-bytecode-utils:
+    docker:
+      - image: cimg/node:22.23.4@sha256:097391155ab978930031757a857cf57278b907da8a994f278bbd27443c5018bf
+    resource_class: small
+    working_directory: ~/sourcify
+    steps:
+      - checkout
+      - attach_workspace:
+          at: ~/sourcify
+      - run:
+          name: test
+          command: npx lerna run test --scope=@ethereum-sourcify/bytecode-utils --stream
+      - run:
+          name: create lcov report
+          command: npx lerna run cov:lcov --scope=@ethereum-sourcify/bytecode-utils
+      - codecov/upload
+  test-compilers:
+    docker:
+      - image: cimg/node:22.23.4@sha256:097391155ab978930031757a857cf57278b907da8a994f278bbd27443c5018bf
+    resource_class: medium
+    working_directory: ~/sourcify
+    steps:
+      - checkout
+      - attach_workspace:
+          at: ~/sourcify
+      - run:
+          name: test
+          command: npx lerna run test --scope=@ethereum-sourcify/compilers --stream
+      - run:
+          name: create lcov report
+          command: npx lerna run cov:lcov --scope=@ethereum-sourcify/compilers
+      - codecov/upload
+  test-lib-sourcify:
+    docker:
+      - image: cimg/node:22.23.4@sha256:097391155ab978930031757a857cf57278b907da8a994f278bbd27443c5018bf
+    resource_class: medium
+    working_directory: ~/sourcify
+    steps:
+      - checkout
+      - attach_workspace:
+          at: ~/sourcify
+      - run:
+          name: test
+          command: npx lerna run test --scope=@ethereum-sourcify/lib-sourcify --stream
+      - run:
+          name: create lcov report
+          command: npx lerna run cov:lcov --scope=@ethereum-sourcify/lib-sourcify
+      - codecov/upload
+  test-monitor:
+    docker:
+      - image: cimg/node:22.23.4@sha256:097391155ab978930031757a857cf57278b907da8a994f278bbd27443c5018bf
+    resource_class: medium
+    working_directory: ~/sourcify
+    steps:
+      - checkout
+      - attach_workspace:
+          at: ~/sourcify
+      - run:
+          name: test
+          command: npx lerna run test --scope=sourcify-monitor --stream
+      - run:
+          name: create lcov report
+          command: npx lerna run cov:lcov --scope=sourcify-monitor
+      - codecov/upload
+  test-server:
+    docker:
+      - image: cimg/node:22.23.4@sha256:097391155ab978930031757a857cf57278b907da8a994f278bbd27443c5018bf
+      - image: postgres:15-alpine@sha256:3d0f7584ed7d04e27fa050d6683a74746608faf21f202be78460d679cc56461f
+        name: sourcify-db
+        environment:
+          POSTGRES_DB: sourcify
+          POSTGRES_USER: sourcify
+          POSTGRES_PASSWORD: sourcify
+    resource_class: large
+    working_directory: ~/sourcify
+    steps:
+      - checkout
+      - attach_workspace:
+          at: ~/sourcify
+      - run:
+          name: init the database submodule
+          command: git submodule update --init
+      - run:
+          name: test
+          command: npx lerna run test --scope=sourcify-server --stream
+          environment:
+            DOCKER_HOST_POSTGRES_TEST_PORT: 5432
+            SOURCIFY_POSTGRES_HOST: "sourcify-db"
+            SOURCIFY_POSTGRES_DB: "sourcify"
+            SOURCIFY_POSTGRES_USER: "sourcify"
+            SOURCIFY_POSTGRES_PASSWORD: "sourcify"
+            SOURCIFY_POSTGRES_PORT: 5432
+      - run:
+          name: create lcov report
+          command: npx lerna run cov:lcov --scope=sourcify-server
+      - codecov/upload
+  test-creation-tx-apis:
+    docker:
+      - image: cimg/node:22.23.4@sha256:097391155ab978930031757a857cf57278b907da8a994f278bbd27443c5018bf
+    resource_class: small
+    working_directory: ~/sourcify
+    steps:
+      - checkout
+      - attach_workspace:
+          at: ~/sourcify
+      - run:
+          name: test live creation-tx APIs
+          command: cd services/server && npm run test:creation-tx-apis
+  test-4byte:
+    docker:
+      - image: cimg/node:22.23.4@sha256:097391155ab978930031757a857cf57278b907da8a994f278bbd27443c5018bf
+      - image: postgres:15-alpine@sha256:3d0f7584ed7d04e27fa050d6683a74746608faf21f202be78460d679cc56461f
+        name: fourbytes-db
+        environment:
+          POSTGRES_DB: fourbytes_test_db
+          POSTGRES_USER: fourbytes
+          POSTGRES_PASSWORD: fourbytes
+    resource_class: medium
+    working_directory: ~/sourcify
+    steps:
+      - checkout
+      - attach_workspace:
+          at: ~/sourcify
+      - run:
+          name: init the database submodule
+          command: git submodule update --init
+      - run:
+          name: test
+          command: npx lerna run test --scope=sourcify-4byte --stream
+          environment:
+            FOURBYTES_POSTGRES_HOST: "fourbytes-db"
+            FOURBYTES_POSTGRES_DB: "fourbytes_test_db"
+            FOURBYTES_POSTGRES_USER: "fourbytes"
+            FOURBYTES_POSTGRES_PASSWORD: "fourbytes"
+            FOURBYTES_POSTGRES_PORT: 5432
+      - run:
+          name: create lcov report
+          command: npx lerna run cov:lcov --scope=sourcify-4byte
+      - codecov/upload
   monitor-e2e-sepolia:
     <<: *monitor-e2e-base
     environment:
-      CHAIN_ID: '11155111'
+      CHAIN_ID: "11155111"
       CHAIN_NAME: sepolia
-  verification-e2e-goerli:
-    <<: *verification-e2e-base
+  monitor-e2e-hoodi:
+    <<: *monitor-e2e-base
     environment:
-      CHAIN_ID: 5
-      CHAIN_NAME: goerli
+      CHAIN_ID: "560048"
+      CHAIN_NAME: hoodi
   verification-e2e-sepolia:
     <<: *verification-e2e-base
     environment:
-      CHAIN_ID: '11155111'
+      CHAIN_ID: "11155111"
       CHAIN_NAME: sepolia
-  npm-publish:
-    working_directory: ~/source-verify
+  verification-e2e-hoodi:
+    <<: *verification-e2e-base
+    environment:
+      CHAIN_ID: "560048"
+      CHAIN_NAME: hoodi
+  validate-database-schema:
     docker:
-      - image: cimg/node:16.15
+      - image: cimg/node:22.23.4@sha256:097391155ab978930031757a857cf57278b907da8a994f278bbd27443c5018bf
+      - image: postgres:15-alpine@sha256:3d0f7584ed7d04e27fa050d6683a74746608faf21f202be78460d679cc56461f
+        environment:
+          POSTGRES_PASSWORD: password
+          POSTGRES_USER: postgres
+          POSTGRES_DB: test_db
+    environment:
+      DATABASE_URL: postgres://postgres:password@localhost:5432/test_db?sslmode=disable
+      DBMATE_SCHEMA_FILE: ./sourcify-database.sql
     steps:
       - checkout
       - run:
-          name: install dependencies
-          command: npm install && npx lerna bootstrap
+          # Needed to make pg_dump available for dbmate
+          name: Install PostgreSQL client tools
+          command: |
+            sudo apt-get update
+            # Add PostgreSQL official APT repository for version 15
+            sudo apt-get install -y wget ca-certificates
+            wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -
+            echo "deb http://apt.postgresql.org/pub/repos/apt/ $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
+            sudo apt-get update
+            # Install PostgreSQL 15 client tools to match the postgres:15-alpine server image
+            sudo apt-get install -y postgresql-client-15
       - run:
-          name: build everything
-          command: npx lerna run build
+          name: Install Node.js dependencies
+          command: |
+            cd services/database
+            npm install
       - run:
-          name: Publish npm package
-          command: ./scripts/publish_to_npm.sh
+          name: Validate schema is in sync with migrations
+          command: |
+            cd services/database
+            # Initialize git submodules
+            git submodule update --init
+            # Apply migrations using npm script
+            DBMATE_SCHEMA_FILE=ci-dump.sql npm run migrate:up
+            # Force dump in case problems were ignored
+            DBMATE_SCHEMA_FILE=ci-dump.sql npx dbmate dump
+
+            # Check if the schema file has changed
+            # Define cleanup function to remove:
+            # - SQL comments (lines starting with --)
+            # - psql meta-commands (\restrict, \unrestrict)
+            # - blank lines (pg_dump formatting varies across OS/distributions)
+            clean_sql() {
+              sed -e '/^--/d' \
+                  -e '/^\\restrict/d' \
+                  -e '/^\\unrestrict/d' \
+                  -e '/^$/d' \
+                  "$1"
+            }
+
+            if diff -u <(clean_sql sourcify-database.sql) <(clean_sql ci-dump.sql); then
+              echo "✅ Schema validation passed - sourcify-database.sql is in sync with migrations"
+            else
+              echo "❌ Schema file is out of sync with migrations!"
+              echo ""
+              echo "The sourcify-database.sql file does not match what the migrations produce."
+              echo ""
+              echo "To fix this, run a postgres instance locally."
+              echo "Then apply the migrations to a clean database:"
+              echo "  cd services/database && npm run migrate:up"
+              echo ""
+              echo "Then include the updated schema in your commit:"
+              echo "  git add sourcify-database.sql && git commit -m 'Update schema'"
+              exit 1
+            fi
+      - run:
+          name: Test that down migrations work
+          command: |
+            cd services/database
+            # Initialize git submodules
+            git submodule update --init
+            # Drop db from previous test
+            npm run migrate:drop-db
+            # Apply migrations
+            npm run migrate:up
+
+            for i in ./migrations-temp/*
+            do
+              if test -f "$i"
+              then
+                # The command will fail if something is wrong
+                npm run migrate:rollback
+              fi
+            done;
+
+            # Check if migrations can be run again
+            npm run migrate:up

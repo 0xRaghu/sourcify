@@ -1,0 +1,94 @@
+import type {
+  SolarJsonInput,
+  SolarOutput,
+  SolidityJsonInput,
+  SolidityOutput,
+  VyperJsonInput,
+  VyperOutput,
+  FeJsonInput,
+  FeOutput,
+} from '@ethereum-sourcify/compilers-types';
+import type { SourcifyLibErrorParameters } from '../SourcifyLibError';
+import { SourcifyLibError } from '../SourcifyLibError';
+import type { SolidityCompilation } from './SolidityCompilation';
+import type { VyperCompilation } from './VyperCompilation';
+import type { FeCompilation } from './FeCompilation';
+
+export interface CompiledContractCborAuxdata {
+  [key: string]: {
+    offset: number;
+    value: string;
+  };
+}
+
+export interface StringMap {
+  [key: string]: string;
+}
+
+export interface CompilerAuxdataDiff {
+  real: string;
+  diffStart: number;
+}
+
+export interface CompilationTarget {
+  name: string;
+  path: string;
+}
+
+export type CompilationLanguage = 'Solidity' | 'Vyper' | 'Yul' | 'Fe';
+
+export type CompilationErrorCode =
+  | 'invalid_language'
+  | 'cannot_generate_cbor_auxdata_positions'
+  | 'invalid_compiler_version'
+  | 'unsupported_compiler_version'
+  | 'contract_not_found_in_compiler_output'
+  | 'runtime_bytecode_not_found_in_compiler_output'
+  | 'compiler_error'
+  | 'compiler_timeout'
+  | 'compiler_out_of_memory'
+  | 'no_compiler_output'
+  | 'metadata_not_set'
+  | 'creation_bytecode_cbor_auxdata_not_set'
+  | 'runtime_bytecode_cbor_auxdata_not_set';
+
+export class CompilationError extends SourcifyLibError {
+  declare code: CompilationErrorCode;
+  constructor(
+    params: SourcifyLibErrorParameters & {
+      code: CompilationErrorCode;
+    },
+  ) {
+    super(params);
+  }
+}
+
+export interface ISolidityCompiler {
+  compile(
+    version: string,
+    solcJsonInput: SolidityJsonInput,
+    forceEmscripten?: boolean,
+  ): Promise<SolidityOutput>;
+}
+
+export interface IVyperCompiler {
+  compile(
+    version: string,
+    vyperJsonInput: VyperJsonInput,
+  ): Promise<VyperOutput>;
+}
+
+export interface IFeCompiler {
+  compile(version: string, feJsonInput: FeJsonInput): Promise<FeOutput>;
+}
+
+// Solar takes and returns the solc standard JSON format plus Solar fields
+export interface ISolarCompiler {
+  compile(
+    version: string,
+    solarJsonInput: SolarJsonInput,
+  ): Promise<SolarOutput>;
+}
+
+export type AnyCompilation =
+  SolidityCompilation | VyperCompilation | FeCompilation;

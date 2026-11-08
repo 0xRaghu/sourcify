@@ -7,57 +7,46 @@
     {
       "type": "node",
       "request": "launch",
-      "name": "Server",
-      "program": "${workspaceFolder}/dist/server/server.js",
-      "envFile": "${workspaceFolder}/environments/.env",
-      "preLaunchTask": "npm: build:lerna",
-      "outFiles": [
-        "${workspaceFolder}/dist/**/*.js",
-        "${workspaceFolder}/packages/**/build/**/*.js"
-      ],
-      "env": {
-        // "DEBUG": "express:*" // Debug all express modules *
-      },
-      "smartStep": true,
-      "console": "integratedTerminal",
-      "outputCapture": "std",
-    },
-    {
-      "type": "node",
-      "request": "launch",
       "name": "Server - without build",
-      "program": "${workspaceFolder}/dist/server/server.js",
-      "envFile": "${workspaceFolder}/environments/.env",
+      "runtimeVersion": "22.23.4",
+      "program": "${workspaceFolder}/services/server/dist/server/cli.js",
+      "envFile": "${workspaceFolder}/services/server/.env",
       "outFiles": [
-        "${workspaceFolder}/dist/**/*.js",
+        "${workspaceFolder}/services/server/dist/**/*.js",
         "${workspaceFolder}/packages/**/build/**/*.js"
       ],
       "env": {
         // "DEBUG": "express:*" // Debug all express modules *
+        // "NODE_ENV": "production"
+        // "NODE_LOG_LEVEL": "debug"
       },
       "smartStep": true,
       "console": "integratedTerminal",
-      "outputCapture": "std",
+      "outputCapture": "std"
     },
     {
-      // Make sure the UI webserver is already running with `npm start`
-      "name": "UI",
-      "type": "chrome",
-      "request": "launch",
-      "url": "http://localhost:3000",
-      "webRoot": "${workspaceRoot}/ui/src",
+      "type": "node",
+      "request": "attach",
+      "name": "Docker: Attach to Server",
+      "remoteRoot": "/home/app",
+      "localRoot": "${workspaceFolder}",
+      "port": 9229,
+      "address": "localhost"
     },
     {
       "type": "node",
       "request": "launch",
-      "name": "Monitor",
-      "program": "${workspaceFolder}/dist/monitor/monitor.js",
-      "envFile": "${workspaceFolder}/environments/.env",
-      "preLaunchTask": "npm: build:lerna",
+      "name": "4Byte - without build",
+      "runtimeVersion": "22.23.4",
+      "program": "${workspaceFolder}/services/4byte/dist/cli.js",
+      "envFile": "${workspaceFolder}/services/4byte/.env",
       "outFiles": [
-        "${workspaceFolder}/dist/**/*.js",
+        "${workspaceFolder}/services/4byte/dist/**/*.js",
         "${workspaceFolder}/packages/**/build/**/*.js"
       ],
+      "env": {
+        // "NODE_ENV": "production"
+      },
       "smartStep": true,
       "console": "integratedTerminal",
       "outputCapture": "std"
@@ -66,10 +55,13 @@
       "type": "node",
       "request": "launch",
       "name": "Monitor - without build",
-      "program": "${workspaceFolder}/dist/monitor/monitor.js",
-      "envFile": "${workspaceFolder}/environments/.env",
+      "runtimeVersion": "22.23.4",
+      "cwd": "${workspaceFolder}/services/monitor",
+      "program": "dist/index.js",
+      "args": ["--chainsPath=chains-dev.json"],
+      "envFile": ".env",
       "outFiles": [
-        "${workspaceFolder}/dist/**/*.js",
+        "${workspaceFolder}/services/monitor/dist/**/*.js",
         "${workspaceFolder}/packages/**/build/**/*.js"
       ],
       "smartStep": true,
@@ -79,108 +71,52 @@
     {
       "type": "node",
       "request": "launch",
-      "name": "Mocha - All",
-      "program": "${workspaceFolder}/node_modules/.bin/lerna",
-      "env": {
-        "TESTING": "true",
-      },
+      "name": "Mocha - Server Unit",
+      "runtimeVersion": "22.23.4",
+      "program": "${workspaceRoot}/node_modules/.bin/mocha",
+      "cwd": "${workspaceFolder}/services/server",
       "args": [
-        "run",
-        "test",
-        "--stream"
-      ],
-      "outFiles": [
-        "${workspaceFolder}/dist/**/*.js",
-        "${workspaceFolder}/packages/**/build/**/*.js"
+        "${workspaceFolder}/services/server/test/unit/**/*.spec.ts",
+        "-r",
+        "${workspaceFolder}/services/server/test/load-env.js",
+        // "--grep=should initialize compilers",
+        "--exit"
       ],
       "smartStep": true,
-      "skipFiles": [
-        "<node_internals>/**",
-        "node_modules/**"
-      ],
-      "console": "integratedTerminal",
+      "console": "integratedTerminal"
     },
     {
       "type": "node",
       "request": "launch",
-      "name": "Mocha - Server",
+      "name": "Mocha - Server Integration",
+      "runtimeVersion": "22.23.4",
       "program": "${workspaceRoot}/node_modules/.bin/mocha",
+      "cwd": "${workspaceFolder}/services/server",
       "env": {
         // "DEBUG": "express:*", // Debug all express modules *
-        "TESTING": "true",
       },
+      "preLaunchTask": "server:database-test:up",
+      "postDebugTask": "server:database-test:down",
       "args": [
-        "${workspaceFolder}/test/server.js",
+        "${workspaceFolder}/services/server/test/integration/**/*.spec.ts",
+        "-r",
+        "${workspaceFolder}/services/server/test/load-env.js",
         "--no-timeout",
         // Run a single test when debugging
         // "--grep=v0.6.12",
-        "--exit",
-      ],
-      "outFiles": [
-        "${workspaceFolder}/dist/**/*.js",
-        "${workspaceFolder}/packages/**/build/**/*.js",
+        "--exit"
       ],
       "smartStep": true,
-      "console": "integratedTerminal",
-      // "internalConsoleOptions": "neverOpen"
-    },
-    {
-      "type": "node",
-      "request": "launch",
-      "name": "Mocha - Etherscan",
-      "program": "${workspaceRoot}/node_modules/.bin/mocha",
-      "env": {
-        // "DEBUG": "express:*", // Debug all express modules *
-        "TESTING": "true",
-      },
-      "args": [
-        "${workspaceFolder}/test/etherscan.js",
-        "--no-timeout",
-        // Run a single test when debugging
-        // "--grep=v0.6.12",
-        "--exit",
-      ],
-      "outFiles": [
-        "${workspaceFolder}/dist/**/*.js",
-        "${workspaceFolder}/packages/**/build/**/*.js",
-      ],
-      "smartStep": true,
-      "console": "integratedTerminal",
-      // "internalConsoleOptions": "neverOpen"
-    },
-    {
-      "type": "node",
-      "request": "launch",
-      "name": "Mocha - Etherscan Instances",
-      "program": "${workspaceRoot}/node_modules/.bin/mocha",
-      "env": {
-        "TESTING": "true",
-      },
-      "args": [
-        "${workspaceFolder}/test/etherscan/etherscanInstances.js",
-        "--no-timeout",
-        // Run a single test when debugging
-        // "--grep=v0.6.12",
-        "--exit",
-      ],
-      "outFiles": [
-        "${workspaceFolder}/dist/**/*.js",
-        "${workspaceFolder}/packages/**/build/**/*.js",
-      ],
-      "smartStep": true,
-      "console": "integratedTerminal",
+      "console": "integratedTerminal"
       // "internalConsoleOptions": "neverOpen"
     },
     {
       "type": "node",
       "request": "launch",
       "name": "Mocha - lib-sourcify",
+      "runtimeVersion": "22.23.4",
       "cwd": "${workspaceFolder}/packages/lib-sourcify",
-      "program": "./node_modules/.bin/mocha",
-      "env": {
-        // "DEBUG": "express:*", // Debug all express modules *
-        "TESTING": "true",
-      },
+      "program": "${workspaceRoot}/node_modules/.bin/mocha",
       "args": [
         "-r",
         "ts-node/register",
@@ -188,98 +124,100 @@
         "--no-timeout",
         // Run a single test when debugging
         // "--grep=v0.6.12",
-        "--exit",
+        "--exit"
       ],
       "sourceMaps": true,
       "smartStep": true,
-      "console": "integratedTerminal",
+      "console": "integratedTerminal"
       // "internalConsoleOptions": "neverOpen"
     },
     {
       "type": "node",
       "request": "launch",
-      "name": "Mocha - Contract Call Decoder",
-      "cwd": "${workspaceFolder}/packages/contract-call-decoder",
-      "program": "./node_modules/ava/cli.js",
-      "env": {
-        "TESTING": "true",
-      },
+      "name": "Mocha - bytecode-utils",
+      "runtimeVersion": "22.23.4",
+      "cwd": "${workspaceFolder}/packages/bytecode-utils",
+      "program": "${workspaceRoot}/node_modules/.bin/mocha",
       "args": [
+        "-r",
+        "ts-node/register",
+        "./test/**/*.spec.ts",
+        "--no-timeout",
+        // Run a single test when debugging
+        // "--grep=v0.6.12",
+        "--exit"
       ],
-      "outFiles": [
-        "./**/*.js",
-        "${workspaceFolder}/packages/contract-call-decoder/build/**/*.js"
-      ],
+      "sourceMaps": true,
       "smartStep": true,
-      "console": "integratedTerminal",
+      "console": "integratedTerminal"
+      // "internalConsoleOptions": "neverOpen"
+    },
+    {
+      "type": "node",
+      "request": "launch",
+      "name": "Mocha - compilers",
+      "runtimeVersion": "22.23.4",
+      "cwd": "${workspaceFolder}/packages/compilers",
+      "program": "${workspaceRoot}/node_modules/.bin/mocha",
+      "args": [
+        "-r",
+        "ts-node/register",
+        "./test/**/*.spec.ts",
+        "--no-timeout",
+        // Run a single test when debugging
+        // "--grep=v0.6.12",
+        "--exit"
+      ],
+      "sourceMaps": true,
+      "smartStep": true,
+      "console": "integratedTerminal"
+      // "internalConsoleOptions": "neverOpen"
+    },
+    {
+      "type": "node",
+      "request": "launch",
+      "name": "Mocha - 4Byte",
+      "runtimeVersion": "22.23.4",
+      "cwd": "${workspaceFolder}/services/4byte",
+      "program": "${workspaceRoot}/node_modules/.bin/mocha",
+      "preLaunchTask": "4byte:database-test:up",
+      "postDebugTask": "4byte:database-test:down",
+      "args": [
+        "--require",
+        "ts-node/register",
+        "--exit",
+        "--recursive",
+        "test/**/*.spec.ts"
+        // Run a single test when debugging
+        // "--grep=should lookup signatures"
+      ],
+      "env": {
+        // "NODE_ENV": "test"
+        // "NODE_LOG_LEVEL": "debug"
+        "FOURBYTES_POSTGRES_HOST": "localhost",
+        "FOURBYTES_POSTGRES_PORT": "5433"
+      },
+      "smartStep": true,
+      "console": "integratedTerminal"
       // "internalConsoleOptions": "neverOpen"
     },
     {
       "type": "node",
       "request": "launch",
       "name": "Mocha - Monitor",
+      "runtimeVersion": "22.23.4",
+      "cwd": "${workspaceFolder}/services/monitor",
       "program": "${workspaceRoot}/node_modules/.bin/mocha",
-      "env": {
-        "TESTING": "true",
-      },
       "args": [
-        "${workspaceFolder}/test/monitor.js",
-        "--no-timeout"
-      ],
-      "outFiles": [
-        "${workspaceFolder}/dist/**/*.js",
-        "${workspaceFolder}/packages/**/build/**/*.js",
-      ],
-      "smartStep": true,
-      "console": "integratedTerminal",
-      "internalConsoleOptions": "neverOpen"
-    },
-    {
-      "type": "node",
-      "request": "launch",
-      "name": "Mocha - Chains",
-      "program": "${workspaceRoot}/node_modules/.bin/mocha",
-      "env": {
-        "TESTING": "true",
-        // "NEW_CHAIN_ID": "11155111"
-      },
-      "args": [
-        "${workspaceFolder}/test/chains/chain-tests.js",
+        "${workspaceFolder}/services/monitor/test/**.spec.ts",
         "--no-timeout",
         // Run a single test when debugging
-        // "--grep=Optimism",
-        "--exit",
-      ],
-      "outFiles": [
-        "${workspaceFolder}/dist/**/*.js",
-        "${workspaceFolder}/packages/**/build/**/*.js"
+        // "--grep=v0.6.12",
+        "--exit"
       ],
       "smartStep": true,
-      "console": "integratedTerminal",
-      "internalConsoleOptions": "neverOpen"
-    },
-    {
-      "type": "node",
-      "request": "launch",
-      "name": "Mocha - Source Fetcher",
-      "program": "${workspaceRoot}/node_modules/.bin/mocha",
-      "env": {
-        "TESTING": "true",
-      },
-      "args": [
-        "${workspaceFolder}/test/sourceFetcher.js",
-        "--no-timeout",
-        // Run a single test when debugging
-        // "--grep=fallback",
-        "--exit",
-      ],
-      "outFiles": [
-        "${workspaceFolder}/dist/**/*.js",
-        "${workspaceFolder}/packages/**/build/**/*.js"
-      ],
-      "smartStep": true,
-      "console": "integratedTerminal",
-      "internalConsoleOptions": "neverOpen"
-    },
+      "console": "integratedTerminal"
+      // "internalConsoleOptions": "neverOpen"
+    }
   ]
 }

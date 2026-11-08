@@ -1,0 +1,335 @@
+import { use, expect } from "chai";
+import { SourcifyDatabaseService } from "../../../src/server/services/storageServices/SourcifyDatabaseService";
+import config from "config";
+import chaiAsPromised from "chai-as-promised";
+import { MockVerificationExport } from "../../helpers/mocks";
+import { resetDatabase } from "../../helpers/helpers";
+import sinon from "sinon";
+import * as signatureUtil from "../../../src/server/services/utils/signature-util";
+import type { QueryResult } from "pg";
+import {
+  bytesFromString,
+  type Tables,
+} from "../../../src/server/services/utils/database-util";
+import { id as keccak256str } from "ethers";
+import { ConflictError } from "../../../src/common/errors/ConflictError";
+import logger from "../../../src/common/logger";
+
+use(chaiAsPromised);
+
+describe("SourcifyDatabaseService", function () {
+  let databaseService: SourcifyDatabaseService;
+  const sandbox = sinon.createSandbox();
+
+  before(async () => {
+    process.env.SOURCIFY_POSTGRES_PORT =
+      process.env.DOCKER_HOST_POSTGRES_TEST_PORT || "5431";
+    if (
+      !process.env.SOURCIFY_POSTGRES_HOST ||
+      !process.env.SOURCIFY_POSTGRES_DB ||
+      !process.env.SOURCIFY_POSTGRES_USER ||
+      !process.env.SOURCIFY_POSTGRES_PASSWORD ||
+      !process.env.SOURCIFY_POSTGRES_PORT
+    ) {
+      throw new Error("Not all required environment variables set");
+    }
+
+    databaseService = new SourcifyDatabaseService(
+      {
+        postgres: {
+          host: process.env.SOURCIFY_POSTGRES_HOST as string,
+          database: process.env.SOURCIFY_POSTGRES_DB as string,
+          user: process.env.SOURCIFY_POSTGRES_USER as string,
+          password: process.env.SOURCIFY_POSTGRES_PASSWORD as string,
+          port: parseInt(process.env.SOURCIFY_POSTGRES_PORT),
+        },
+      },
+      config.get("serverUrl"),
+    );
+    await databaseService.init();
+  });
+
+  this.beforeEach(async () => {
+    await resetDatabase(databaseService.database.pool);
+  });
+
+  afterEach(() => {
+    sandbox.restore();
+  });
+
+  it("should throw an error if no verified_contracts row can be inserted for a verification update", async () => {
+    const nonePerfectVerification = structuredClone(MockVerificationExport);
+    nonePerfectVerification.status.creationMatch = "partial";
+
+    await databaseService.init();
+    await databaseService.storeVerification(nonePerfectVerification);
+
+    // We cannot use to.eventually.be.rejectedWith because ConflictError doesn't extend Error directly
+    let thrownError: unknown;
+    try {
+      await databaseService.storeVerification(MockVerificationExport);
+      expect.fail("Expected storeVerification to throw");
+    } catch (error) {
+      thrownError = error;
+    }
+
+    expect(thrownError).to.be.instanceOf(ConflictError);
+    expect((thrownError as ConflictError).statusCode).to.equal(409);
+    expect((thrownError as ConflictError).message).to.equal(
+      "A verified contract already exist for your compilation and deployment",
+    );
+  });
+
+  it("should store signatures correctly when storeVerification is called", async () => {
+    await databaseService.storeVerification(MockVerificationExport);
+
+    const signaturesResult: QueryResult<Tables.Signatures> =
+      await databaseService.database.pool.query("SELECT * FROM signatures");
+
+    expect(signaturesResult.rowCount).to.equal(2);
+
+    const signatures = signaturesResult.rows;
+    const retrieveSignature = signatures.find(
+      (s) => s.signature === "retrieve()",
+    );
+    const storeSignature = signatures.find(
+      (s) => s.signature === "store(uint256)",
+    );
+
+    expect(retrieveSignature).to.exist;
+    expect(storeSignature).to.exist;
+
+    const expectedRetrieveSignatureHash32 = bytesFromString(
+      keccak256str("retrieve()"),
+    );
+    const expectedStoreSignatureHash32 = bytesFromString(
+      keccak256str("store(uint256)"),
+    );
+
+    expect(retrieveSignature!.signature_hash_32).to.be.instanceOf(Buffer);
+    expect(retrieveSignature!.signature_hash_32.length).to.equal(32);
+    expect(
+      retrieveSignature!.signature_hash_32.equals(
+        expectedRetrieveSignatureHash32,
+      ),
+    ).to.be.true;
+    expect(retrieveSignature!.signature_hash_4).to.be.instanceOf(Buffer);
+    expect(retrieveSignature!.signature_hash_4.length).to.equal(4);
+    expect(retrieveSignature!.signature_hash_4).to.deep.equal(
+      expectedRetrieveSignatureHash32.subarray(0, 4),
+    );
+
+    expect(storeSignature!.signature_hash_32).to.be.instanceOf(Buffer);
+    expect(storeSignature!.signature_hash_32.length).to.equal(32);
+    expect(
+      storeSignature!.signature_hash_32.equals(expectedStoreSignatureHash32),
+    ).to.be.true;
+    expect(storeSignature!.signature_hash_4).to.be.instanceOf(Buffer);
+    expect(storeSignature!.signature_hash_4.length).to.equal(4);
+    expect(storeSignature!.signature_hash_4).to.deep.equal(
+      expectedStoreSignatureHash32.subarray(0, 4),
+    );
+
+    const compiledContractSignaturesResult: QueryResult<Tables.CompiledContractsSignatures> =
+      await databaseService.database.pool.query(
+        "SELECT * FROM compiled_contracts_signatures",
+      );
+
+    expect(compiledContractSignaturesResult.rowCount).to.equal(2);
+
+    const contractSignatures = compiledContractSignaturesResult.rows;
+    const compiledContractRetrieveSig =
+      compiledContractSignaturesResult.rows.find((csig) =>
+        csig.signature_hash_32.equals(expectedRetrieveSignatureHash32),
+      );
+    const compiledContractStoreSig = contractSignatures.find((csig) =>
+      csig.signature_hash_32.equals(expectedStoreSignatureHash32),
+    );
+
+    expect(compiledContractRetrieveSig).to.exist;
+    expect(compiledContractStoreSig).to.exist;
+    expect(compiledContractRetrieveSig!.compilation_id).to.equal(
+      compiledContractStoreSig!.compilation_id,
+    );
+    expect(compiledContractRetrieveSig!.signature_type).to.equal("function");
+    expect(compiledContractStoreSig!.signature_type).to.equal("function");
+  });
+
+  it("should handle duplicate signature storage gracefully", async () => {
+    // Change mock to be able to store the verification twice
+    const modifiedVerification = structuredClone(MockVerificationExport);
+    modifiedVerification.status.creationMatch = "partial";
+    modifiedVerification.compilation.language = "Vyper";
+
+    await databaseService.storeVerification(modifiedVerification);
+    await expect(databaseService.storeVerification(MockVerificationExport)).to
+      .not.be.rejected;
+
+    const signaturesResult = await databaseService.database.pool.query(
+      "SELECT COUNT(*) as count FROM signatures",
+    );
+    expect(parseInt(signaturesResult.rows[0].count)).to.equal(2);
+  });
+
+  it("should not insert sources when the compiled_contracts row is deduplicated", async () => {
+    // Store the original contract. This creates a fresh compiled_contracts row
+    // together with its single source.
+    await databaseService.storeVerification(MockVerificationExport);
+
+    // A byte-identical sibling: same compiler/version/language and same
+    // bytecodes (so it hits the compiled_contracts dedup constraint), but a
+    // different deployment and a different source file.
+    const siblingVerification = structuredClone(MockVerificationExport);
+    siblingVerification.address = "0x1111111111111111111111111111111111111111";
+    siblingVerification.deploymentInfo.txHash =
+      "0x1111111111111111111111111111111111111111111111111111111111111111";
+    siblingVerification.compilation.compilationTarget = {
+      path: "project:/contracts/Sibling.sol",
+      name: "Sibling",
+    };
+    siblingVerification.compilation.sources = {
+      "project:/contracts/Sibling.sol":
+        "// SPDX-License-Identifier: GPL-3.0\npragma solidity >=0.7.0 <0.9.0;\ncontract Sibling {}\n",
+    };
+
+    await databaseService.storeVerification(siblingVerification);
+
+    // The two verifications must share the single deduplicated compilation.
+    const compiledContractsResult = await databaseService.database.pool.query(
+      "SELECT COUNT(*) as count FROM compiled_contracts",
+    );
+    expect(parseInt(compiledContractsResult.rows[0].count)).to.equal(1);
+
+    const verifiedContractsResult = await databaseService.database.pool.query(
+      "SELECT COUNT(*) as count FROM verified_contracts",
+    );
+    expect(parseInt(verifiedContractsResult.rows[0].count)).to.equal(2);
+
+    // The sibling's source must NOT have been appended to the shared row: only
+    // the original contract's single source should be present.
+    const compiledContractsSourcesResult =
+      await databaseService.database.pool.query(
+        "SELECT path FROM compiled_contracts_sources",
+      );
+    expect(compiledContractsSourcesResult.rows).to.have.length(1);
+    expect(compiledContractsSourcesResult.rows[0].path).to.equal(
+      "project:/contracts/Storage.sol",
+    );
+  });
+
+  it("should store metadata once per compilation and keep the first submitter's metadata", async () => {
+    const originalMetadata = MockVerificationExport.compilation.metadata!;
+
+    // Store the original contract. This creates a fresh compiled_contracts row
+    // together with its compiled_contracts_metadata row.
+    await databaseService.storeVerification(MockVerificationExport);
+
+    // A byte-identical sibling: same compiler/version/language and same
+    // bytecodes (so it hits the compiled_contracts dedup constraint), but a
+    // different deployment and different metadata (possible when the compiler
+    // omits the metadata hash from the bytecode,
+    // settings.metadata.bytecodeHash: "none").
+    const siblingVerification = structuredClone(MockVerificationExport);
+    siblingVerification.address = "0x1111111111111111111111111111111111111111";
+    siblingVerification.deploymentInfo.txHash =
+      "0x1111111111111111111111111111111111111111111111111111111111111111";
+    siblingVerification.compilation.metadata = {
+      ...originalMetadata,
+      output: {
+        ...originalMetadata.output,
+        devdoc: { kind: "dev", methods: {}, version: 1 },
+      },
+    };
+
+    await databaseService.storeVerification(siblingVerification);
+
+    // The two verifications must share the single deduplicated compilation.
+    const compiledContractsResult = await databaseService.database.pool.query(
+      "SELECT COUNT(*) as count FROM compiled_contracts",
+    );
+    expect(parseInt(compiledContractsResult.rows[0].count)).to.equal(1);
+
+    // The shared compilation must hold exactly one metadata row: the
+    // original contract's.
+    const compilationMetadataResult = await databaseService.database.pool.query(
+      "SELECT metadata FROM compiled_contracts_metadata",
+    );
+    expect(compilationMetadataResult.rows).to.have.length(1);
+    expect(compilationMetadataResult.rows[0].metadata).to.deep.equal(
+      originalMetadata,
+    );
+  });
+
+  it("should not store a compiled_contracts_metadata row when the compilation has no metadata", async () => {
+    const noMetadataVerification = structuredClone(MockVerificationExport);
+    (noMetadataVerification.compilation as any).metadata = undefined;
+
+    await databaseService.storeVerification(noMetadataVerification);
+
+    const verifiedContractsResult = await databaseService.database.pool.query(
+      "SELECT COUNT(*) as count FROM verified_contracts",
+    );
+    expect(parseInt(verifiedContractsResult.rows[0].count)).to.equal(1);
+
+    const compilationMetadataResult = await databaseService.database.pool.query(
+      "SELECT COUNT(*) as count FROM compiled_contracts_metadata",
+    );
+    expect(parseInt(compilationMetadataResult.rows[0].count)).to.equal(0);
+  });
+
+  it("should log each new match with its matchId after storeVerification", async () => {
+    // Cast because winston's overloaded info() confuses sinon's types
+    const infoSpy = sandbox.spy(logger, "info") as unknown as sinon.SinonSpy<
+      [string, Record<string, unknown>]
+    >;
+
+    await databaseService.storeVerification(MockVerificationExport);
+
+    const sourcifyMatchesResult = await databaseService.database.pool.query(
+      `SELECT id, to_char(created_at, 'YYYY-MM-DD"T"HH24:MI:SS"Z"') as verified_at
+      FROM sourcify_matches`,
+    );
+    expect(sourcifyMatchesResult.rows).to.have.length(1);
+
+    // A Cloud Logging sink filters on this exact message (see storeVerification)
+    const storedLogCalls = infoSpy
+      .getCalls()
+      .filter((call) => call.args[0] === "Stored to SourcifyDatabase");
+    expect(storedLogCalls).to.have.length(1);
+    const logFields = storedLogCalls[0].args[1];
+    expect(logFields).to.deep.equal({
+      match: "exact_match",
+      creationMatch: "exact_match",
+      runtimeMatch: "exact_match",
+      chainId: MockVerificationExport.chainId.toString(),
+      address: MockVerificationExport.address,
+      verifiedAt: sourcifyMatchesResult.rows[0].verified_at,
+      matchId: sourcifyMatchesResult.rows[0].id,
+      name: MockVerificationExport.compilation.compilationTarget.name,
+    });
+  });
+
+  it("should still store verification even if signature storage fails", async () => {
+    sandbox
+      .stub(signatureUtil, "extractSignaturesFromAbi")
+      .throws(new Error("Simulated signature extraction error"));
+
+    await expect(databaseService.storeVerification(MockVerificationExport)).to
+      .not.be.rejected;
+
+    const verifiedContractsResult = await databaseService.database.pool.query(
+      "SELECT COUNT(*) FROM verified_contracts",
+    );
+    expect(parseInt(verifiedContractsResult.rows[0].count)).to.equal(1);
+
+    const signaturesResult = await databaseService.database.pool.query(
+      "SELECT COUNT(*) as count FROM signatures",
+    );
+    expect(parseInt(signaturesResult.rows[0].count)).to.equal(0);
+
+    const contractSignaturesResult = await databaseService.database.pool.query(
+      "SELECT COUNT(*) as count FROM compiled_contracts_signatures",
+    );
+    expect(parseInt(contractSignaturesResult.rows[0].count)).to.equal(0);
+  });
+});

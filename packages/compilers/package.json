@@ -1,0 +1,85 @@
+{
+  "name": "@ethereum-sourcify/compilers",
+  "version": "1.4.0",
+  "description": "Wrapper around multiple compilers to download the right version and invoke the compilation with a common interface.",
+  "main": "build/main/index.js",
+  "typings": "build/main/index.d.ts",
+  "module": "build/module/index.js",
+  "scripts": {
+    "build": "run-p build:*",
+    "build:main": "tsc -p tsconfig.json",
+    "build:module": "tsc -p tsconfig.module.json",
+    "fix": "run-s fix:*",
+    "fix:prettier": "prettier \"./**/*.ts\" --write",
+    "fix:lint": "eslint . --fix",
+    "check": "run-s check:*",
+    "check:eslint": "eslint .",
+    "check:prettier": "prettier \"./**/*.ts\" --check",
+    "test": "c8 --reporter=none mocha --exit test/**",
+    "watch:build": "tsc -p tsconfig.json -w",
+    "cov": "run-s build test:unit cov:html cov:lcov && open-cli coverage/index.html",
+    "cov:html": "c8 report --reporter=html",
+    "cov:lcov": "c8 report --reporter=lcov",
+    "cov:check": "c8 report && c8 check-coverage --lines 100 --functions 100 --branches 100"
+  },
+  "engines": {
+    "node": "v26.10.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/argotorg/sourcify.git"
+  },
+  "keywords": [
+    "sourcify",
+    "ethereum",
+    "compiler",
+    "compilers",
+    "solidity",
+    "solc",
+    "vyper"
+  ],
+  "author": "",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/argotorg/sourcify/issues"
+  },
+  "homepage": "https://github.com/argotorg/sourcify#readme",
+  "dependencies": {
+    "@ethereum-sourcify/compilers-types": "^1.4.0",
+    "semver": "7.8.5",
+    "solc": "0.8.37"
+  },
+  "devDependencies": {
+    "@types/chai": "4.3.20",
+    "@types/mocha": "10.0.10",
+    "@types/node": "22.20.5",
+    "@types/semver": "7.8.0",
+    "c8": "11.0.0",
+    "chai": "4.5.0",
+    "mocha": "10.8.2",
+    "npm-run-all2": "9.0.3"
+  },
+  "files": [
+    "build/main",
+    "build/module",
+    "!**/*.spec.*",
+    "!**/*.json",
+    "LICENSE",
+    "README.md"
+  ],
+  "prettier": {
+    "singleQuote": true
+  },
+  "c8": {
+    "exclude": [
+      "**/*.spec.js",
+      "**/*.spec.ts"
+    ],
+    "reporter": [
+      "html",
+      "lcov",
+      "text",
+      "text-summary"
+    ]
+  }
+}

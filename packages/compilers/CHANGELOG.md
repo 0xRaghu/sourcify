@@ -1,0 +1,130 @@
+## @ethereum-sourcify/compilers@1.4.0 - 2026-11-03
+
+- Fix flaky cwd sandbox test in compilers package (#3038)
+- feat: verify contracts compiled with Solar (#3050)
+- fix: verify contracts built with the Solar that Foundry bundles (#3052)
+- Update dependencies
+
+## @ethereum-sourcify/compilers@1.3.2 - 2026-10-21
+
+- update dependencies
+
+## @ethereum-sourcify/compilers@1.3.1 - 2026-10-05
+
+- Update dependencies
+
+## @ethereum-sourcify/compilers@1.3.0 - 2026-09-01
+
+- fix(compilers): sandbox native solc cwd to stop import path leaks (#2920)
+
+## @ethereum-sourcify/compilers@1.2.0 - 2026-08-20
+
+- fix(compilers): jail Fe source writes to the compilation temp dir (#2933)
+- fix: prevent and auto-recover stuck v2 verification jobs (compiler OOM/hang) (#2880) (#2886)
+
+## @ethereum-sourcify/compilers@1.1.5 - 2026-07-06
+
+- update dependencies
+
+## @ethereum-sourcify/compilers@1.1.4 - 2026-06-16
+
+- Escape non-ASCII Vyper standard-json stdin (#2816)
+
+## @ethereum-sourcify/compilers@1.1.3 - 2026-05-27
+
+- Update dependencies
+
+## @ethereum-sourcify/compilers@1.1.2 - 2026-05-21
+
+- Update dependencies
+
+## @ethereum-sourcify/compilers@1.1.1 - 2026-04-14
+
+- update dependencies
+
+## @ethereum-sourcify/compilers@1.1.0 - 2026-03-30
+
+- feat: add Fe language support for smart contract verification (#2692)
+
+## @ethereum-sourcify/compilers@1.0.19 - 2026-03-17
+
+- Always run solcjs in a worker (#2652)
+
+## @ethereum-sourcify/compilers@1.0.18 - 2026-03-02
+
+- update dependencies
+
+## @ethereum-sourcify/compilers@1.0.17 - 2026-01-20
+
+- Improve log levels (#2601)
+- Update dependencies
+
+## @ethereum-sourcify/compilers@1.0.16 - 2026-01-07
+
+- update dependencies
+
+## @ethereum-sourcify/compilers@1.0.15 - 2025-12-15
+
+- Update dependencies
+
+## @ethereum-sourcify/compilers@1.0.14 - 2025-11-19
+
+- update dependencies
+- Turn @typescript-eslint/consistent-type-imports rule on (#2496)
+
+## @ethereum-sourcify/compilers@1.0.13 - 2025-11-04
+
+- update dependencies
+
+## @ethereum-sourcify/compilers@1.0.12 - 2025-10-28
+
+- update dependencies
+
+## @ethereum-sourcify/compilers@1.0.11 - 2025-10-16
+
+- Update dependencies
+
+## @ethereum-sourcify/compilers@1.0.10 - 2025-09-18
+
+- update dependencies
+
+## @ethereum-sourcify/compilers@1.0.9 - 2025-08-25
+
+- Update dependencies
+
+## @ethereum-sourcify/compilers@1.0.8 - 2025-08-11
+
+- update dependencies
+
+## @ethereum-sourcify/compilers@1.0.7 - 2025-08-04
+
+- update Node.js engine version to >=22.0.0 in package.json files (#2269)
+- update dependencies
+
+## @ethereum-sourcify/compilers@1.0.6 - 2025-07-09
+
+- update dependencies
+
+## @ethereum-sourcify/compilers@1.0.5 - 2025-06-18
+
+- Throw when compiler binary couldn't be found/downloaded
+
+## @ethereum-sourcify/compilers@1.0.4 - 2025-05-20
+
+- update dependencies
+
+## @ethereum-sourcify/compilers@1.0.3 - 2025-05-06
+
+- update dependencies
+
+## @ethereum-sourcify/compilers@1.0.2 - 2025-04-30
+
+- update dependencies
+
+## @ethereum-sourcify/compilers@1.0.1 - 2025-04-09
+
+- Add types from @ethereum-sourcify/compilers-types
+
+## @ethereum-sourcify/compilers@1.0.0 - 2025-03-19
+
+- Initialize compilers package

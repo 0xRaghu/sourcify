@@ -1,0 +1,267 @@
+import chai from 'chai';
+import { readFileSync } from 'fs';
+import path from 'path';
+
+import {
+  AuxdataStyle,
+  decode,
+  getAuxdataStyle,
+  getVyperAuxdataStyle,
+  splitAuxdata,
+} from '../src/lib/bytecode';
+
+type Error = {
+  message: string;
+};
+
+const BYTECODES_FOLDER = path.join(__dirname, 'bytecodes');
+const BYTECODE_IPFS = readFileSync(`${BYTECODES_FOLDER}/ipfs.hex`).toString();
+const BYTECODE_BZZR1 = readFileSync(`${BYTECODES_FOLDER}/bzzr1.hex`).toString();
+const BYTECODE_WRONG = readFileSync(`${BYTECODES_FOLDER}/wrong.hex`).toString();
+const BYTECODE_EXPERIMENTAL = readFileSync(
+  `${BYTECODES_FOLDER}/experimental.hex`,
+).toString();
+const BYTECODE_WITHOUT0X = readFileSync(
+  `${BYTECODES_FOLDER}/without0x.hex`,
+).toString();
+const BYTECODE_WITHOUTAUXDATA = readFileSync(
+  `${BYTECODES_FOLDER}/withoutauxdata.hex`,
+).toString();
+const BYTECODE_VYPER_INTEGRITY = readFileSync(
+  `${BYTECODES_FOLDER}/vyper-integrity.hex`,
+).toString();
+const BYTECODE_VYPER_NO_INTEGRITY = readFileSync(
+  `${BYTECODES_FOLDER}/vyper-no-integrity.hex`,
+).toString();
+const BYTECODE_VYPER_NO_ARRAY = readFileSync(
+  `${BYTECODES_FOLDER}/vyper-cbor-no-array.hex`,
+).toString();
+const BYTECODE_VYPER_NO_AUXDATA_LENGTH = readFileSync(
+  `${BYTECODES_FOLDER}/vyper-no-auxdata-length.hex`,
+).toString();
+// Real Solar output: 0.3.0 release, and a main dev build (b079122f) for the text encoding
+const BYTECODE_SOLAR_RELEASE = readFileSync(
+  `${BYTECODES_FOLDER}/solar-release.hex`,
+).toString();
+const BYTECODE_SOLAR_DEV = readFileSync(
+  `${BYTECODES_FOLDER}/solar-dev.hex`,
+).toString();
+const BYTECODE_SOLAR_HASH_NONE = readFileSync(
+  `${BYTECODES_FOLDER}/solar-hash-none.hex`,
+).toString();
+
+describe('bytecode utils', function () {
+  it("return the whole bytecode when the bytecode that doesn't contain auxdata", () => {
+    const [execution, auxadata, length] = splitAuxdata(
+      BYTECODE_WITHOUTAUXDATA,
+      AuxdataStyle.SOLIDITY,
+    );
+    chai.expect(auxadata).to.be.undefined;
+    chai.expect(length).to.be.undefined;
+    chai.expect(`${execution}`).to.equal(BYTECODE_WITHOUTAUXDATA);
+  });
+
+  it('return the full bytecode with no auxdata for Fe contracts', () => {
+    // Use an existing bytecode (e.g. BYTECODE_IPFS) to verify Fe path
+    // always returns the full bytecode unchanged, regardless of content
+    const [execution, auxdata, length] = splitAuxdata(
+      BYTECODE_IPFS,
+      AuxdataStyle.FE,
+    );
+    chai.expect(auxdata).to.be.undefined;
+    chai.expect(length).to.be.undefined;
+    chai.expect(execution).to.equal(BYTECODE_IPFS);
+  });
+
+  it('return the full bytecode with no auxdata for Vyper < 0.3.4 contracts', () => {
+    // Vyper versions prior to 0.3.4 emit no CBOR auxdata at all
+    const [execution, auxdata, length] = splitAuxdata(
+      BYTECODE_IPFS,
+      AuxdataStyle.VYPER_LT_0_3_4,
+    );
+    chai.expect(auxdata).to.be.undefined;
+    chai.expect(length).to.be.undefined;
+    chai.expect(execution).to.equal(BYTECODE_IPFS);
+  });
+
+  it('split succesfully bytecode into execution bytecode and auxadata', () => {
+    const [execution, auxadata, length] = splitAuxdata(
+      BYTECODE_IPFS,
+      AuxdataStyle.SOLIDITY,
+    );
+    chai
+      .expect(auxadata)
+      .to.equal(
+        'a2646970667358221220dceca8706b29e917dacf25fceef95acac8d90d765ac926663ce4096195952b6164736f6c634300060b',
+      );
+    chai.expect(`${execution}${auxadata}${length}`, BYTECODE_IPFS);
+  });
+
+  it('bytecode decode cbor with `ipfs` property', () => {
+    chai
+      .expect(decode(BYTECODE_IPFS, AuxdataStyle.SOLIDITY).ipfs)
+      .to.equal('QmdD3hpMj6mEFVy9DP4QqjHaoeYbhKsYvApX1YZNfjTVWp');
+  });
+
+  it('bytecode decode cbor with `bzzr1` property', () => {
+    chai
+      .expect(decode(BYTECODE_BZZR1, AuxdataStyle.SOLIDITY).bzzr1)
+      .to.equal(
+        '0x71e0c183217ae3e9a1406ae7b58c2f36e09f2b16b10e19d46ceb821f3ee6abad',
+      );
+  });
+
+  it('bytecode decode cbor with `experimental` property', () => {
+    chai.expect(
+      decode(BYTECODE_EXPERIMENTAL, AuxdataStyle.SOLIDITY).experimental,
+    ).to.be.true;
+  });
+
+  it('bytecode decode cbor with the `solar` property of a Solar release', () => {
+    const decoded = decode(BYTECODE_SOLAR_RELEASE, AuxdataStyle.SOLIDITY);
+    chai.expect(decoded.solarVersion).to.equal('0.3.0');
+    chai.expect(decoded.solcVersion).to.be.undefined;
+    // CID of the metadata that Solar emitted with this bytecode
+    chai
+      .expect(decoded.ipfs)
+      .to.equal('QmSA9EPDq5PHLGUG95EKxLYKY4C2VwRTGmns9sin2FEee3');
+  });
+
+  it('bytecode decode cbor with the `solar` property of a Solar dev build', () => {
+    const decoded = decode(BYTECODE_SOLAR_DEV, AuxdataStyle.SOLIDITY);
+    chai.expect(decoded.solarVersion).to.equal('0.2.0-dev+commit.b079122f');
+    chai.expect(decoded.solcVersion).to.be.undefined;
+    chai
+      .expect(decoded.ipfs)
+      .to.equal('QmS35M8oc7tKNd7Tfg5C89cxS5bG7DSYuPgNUZMSfawktk');
+  });
+
+  it('bytecode decode cbor of a Solar build with bytecodeHash none', () => {
+    const decoded = decode(BYTECODE_SOLAR_HASH_NONE, AuxdataStyle.SOLIDITY);
+    chai.expect(decoded).to.deep.equal({ solarVersion: '0.3.0' });
+  });
+
+  it('bytecode decode Vyper cbor auxdata for version >= 0.4.1', () => {
+    chai
+      .expect(decode(BYTECODE_VYPER_INTEGRITY, AuxdataStyle.VYPER))
+      .to.deep.equal({
+        integrity: new Uint8Array([
+          5, 183, 84, 197, 139, 46, 84, 10, 20, 171, 166, 241, 103, 23, 171, 44,
+          48, 237, 199, 73, 54, 200, 152, 93, 119, 177, 82, 205, 151, 136, 126,
+          7,
+        ]),
+        runtimeSize: 143,
+        dataSizes: [],
+        immutableSize: 0,
+        vyperVersion: '0.4.1',
+      });
+  });
+
+  it('bytecode decode Vyper cbor auxdata for version >= 0.3.10 and < 0.4.1', () => {
+    chai
+      .expect(decode(BYTECODE_VYPER_NO_INTEGRITY, AuxdataStyle.VYPER))
+      .to.deep.equal({
+        runtimeSize: 143,
+        dataSizes: [],
+        immutableSize: 0,
+        vyperVersion: '0.3.10',
+      });
+  });
+
+  it('bytecode decode Vyper cbor auxdata for version < 0.3.10', () => {
+    chai
+      .expect(decode(BYTECODE_VYPER_NO_ARRAY, AuxdataStyle.VYPER_LT_0_3_10))
+      .to.deep.equal({
+        vyperVersion: '0.3.8',
+      });
+  });
+
+  it('bytecode decode Vyper cbor auxdata for version < 0.3.5', () => {
+    chai
+      .expect(
+        decode(BYTECODE_VYPER_NO_AUXDATA_LENGTH, AuxdataStyle.VYPER_LT_0_3_5),
+      )
+      .to.deep.equal({
+        vyperVersion: '0.3.4',
+      });
+  });
+
+  it('selects Vyper auxdata style from compiler version history', () => {
+    chai
+      .expect(getVyperAuxdataStyle('0.3.3'))
+      .to.equal(AuxdataStyle.VYPER_LT_0_3_4);
+    chai
+      .expect(getVyperAuxdataStyle('0.3.4'))
+      .to.equal(AuxdataStyle.VYPER_LT_0_3_5);
+    chai
+      .expect(getVyperAuxdataStyle('0.3.8+commit.036f1536'))
+      .to.equal(AuxdataStyle.VYPER_LT_0_3_10);
+    chai
+      .expect(getVyperAuxdataStyle('vyper:0.3.10'))
+      .to.equal(AuxdataStyle.VYPER);
+    chai.expect(getVyperAuxdataStyle('v0.4.1rc1')).to.equal(AuxdataStyle.VYPER);
+  });
+
+  it('selects auxdata style from language and compiler version', () => {
+    chai.expect(getAuxdataStyle('Solidity')).to.equal(AuxdataStyle.SOLIDITY);
+    chai.expect(getAuxdataStyle('Yul')).to.equal(AuxdataStyle.SOLIDITY);
+    chai.expect(getAuxdataStyle('Fe')).to.equal(AuxdataStyle.FE);
+    chai
+      .expect(getAuxdataStyle('Vyper', '0.3.4'))
+      .to.equal(AuxdataStyle.VYPER_LT_0_3_5);
+  });
+
+  it('split Vyper bytecode (>= 0.4.1) into execution bytecode and auxdata', () => {
+    const [execution, auxdata, length] = splitAuxdata(
+      BYTECODE_VYPER_INTEGRITY,
+      AuxdataStyle.VYPER,
+    );
+    chai.expect(auxdata).to.not.be.undefined;
+    chai.expect(length).to.equal('0034');
+    chai
+      .expect(auxdata)
+      .to.equal(
+        '85582005b754c58b2e540a14aba6f16717ab2c30edc74936c8985d77b152cd97887e07188f8000a165767970657283000401',
+      );
+    chai
+      .expect(`${execution}${auxdata}${length}`)
+      .to.equal(BYTECODE_VYPER_INTEGRITY);
+  });
+
+  it('split Vyper bytecode (>= 0.3.10) into execution bytecode and auxdata', () => {
+    const [execution, auxdata, length] = splitAuxdata(
+      BYTECODE_VYPER_NO_INTEGRITY,
+      AuxdataStyle.VYPER,
+    );
+    chai.expect(auxdata).to.not.be.undefined;
+    chai.expect(length).to.equal('0012');
+    chai.expect(auxdata).to.equal('84188f8000a16576797065728300030a');
+    chai
+      .expect(`${execution}${auxdata}${length}`)
+      .to.equal(BYTECODE_VYPER_NO_INTEGRITY);
+  });
+
+  it('bytecode decode should fail gracefully when input is undefined', () => {
+    try {
+      decode('', AuxdataStyle.SOLIDITY);
+    } catch (e) {
+      chai.expect((e as Error).message).to.equal('Bytecode cannot be null');
+    }
+  });
+
+  it('decode a bytecode not starting with 0x', () => {
+    chai
+      .expect(decode(BYTECODE_WITHOUT0X, AuxdataStyle.SOLIDITY).ipfs)
+      .to.equal('QmbFc3AoHDC977j2UH2WwYSwsSRrBGj8bsiiyigXhHzyuZ');
+  });
+
+  it('bytecode decode should fail gracefully when input is corrupted', () => {
+    try {
+      decode(BYTECODE_WRONG, AuxdataStyle.SOLIDITY);
+    } catch (e) {
+      chai
+        .expect((e as Error).message)
+        .to.equal('Auxdata is not in the bytecode');
+    }
+  });
+});

@@ -1,0 +1,38 @@
+const {
+  RWStorageIdentifiers,
+  WStorageIdentifiers,
+} = require("../server/services/storageServices/identifiers");
+
+module.exports = {
+  serverUrl: "https://sourcify.dev/server",
+  server: {
+    port: 80,
+  },
+  storage: {
+    read: RWStorageIdentifiers.SourcifyDatabase,
+    writeOrWarn: [
+      WStorageIdentifiers.AllianceDatabase,
+      // RWStorageIdentifiers.RepositoryV1, // We no longer write to the repositoryV1
+      // WStorageIdentifiers.S3Repository, // Currently disabled
+      WStorageIdentifiers.EtherscanVerify,
+      WStorageIdentifiers.BlockscoutVerify,
+      WStorageIdentifiers.RoutescanVerify,
+    ],
+    writeOrErr: [
+      // WStorageIdentifiers.RepositoryV2, // We no longer write to the repositoryV2
+      RWStorageIdentifiers.SourcifyDatabase,
+    ],
+  },
+  // repositoryV1: {
+  //   path: "/home/app/data/repository",
+  // },
+  // repositoryV2: {
+  //   path: "/home/app/data/repositoryV2",
+  // },
+  solcRepo: "/home/app/data/compilers/solc",
+  solJsonRepo: "/home/app/data/compilers/soljson",
+  vyperRepo: "/home/app/data/compilers/vyper",
+  feRepo: "/home/app/data/compilers/fe",
+  solarRepo: "/home/app/data/compilers/solar",
+  replaceContract: true,
+};

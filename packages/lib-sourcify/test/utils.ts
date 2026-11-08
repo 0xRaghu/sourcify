@@ -1,193 +1,435 @@
-/* eslint-disable @typescript-eslint/no-var-requires */
-// Functions here assume a folder structure like this:
-// - contractFolderPath
-//   - artifact.json
-//   - metadata.json
-//   - sources
-//     - source1.sol
-//     - source2.sol
-
 import path from 'path';
-import Web3 from 'web3';
+import { expect } from 'chai';
+import type { Signer } from 'ethers';
+import { ContractFactory, type JsonRpcSigner } from 'ethers';
+import {
+  useSolidityCompiler,
+  useVyperCompiler,
+  useFeCompiler,
+  useSolarCompiler,
+} from '@ethereum-sourcify/compilers';
+import type {
+  Metadata,
+  SolarJsonInput,
+  SolarOutput,
+  SolidityJsonInput,
+  SolidityOutput,
+  SolidityOutputContract,
+  VyperJsonInput,
+  VyperOutput,
+  FeJsonInput,
+  FeOutput,
+} from '@ethereum-sourcify/compilers-types';
+import type { Verification } from '../src/Verification/Verification';
+import type {
+  CompiledContractCborAuxdata,
+  ISolidityCompiler,
+  IVyperCompiler,
+  IFeCompiler,
+  ISolarCompiler,
+} from '../src/Compilation/CompilationTypes';
 import fs from 'fs';
 import {
-  /* ContextVariables, */ Match,
-  SourcifyChain,
-  verifyDeployed,
+  type PathContent,
+  type SolidityCompilation,
+  SolidityMetadataContract,
+  VyperCompilation,
 } from '../src';
-import { checkFiles } from '../src';
-import { expect } from 'chai';
 
 /**
  *  Function to deploy contracts from provider unlocked accounts
+ *  contractFolderPath must contain an artifact.json file with "abi" and "bytecode" fields
  *
  * @returns the address of the deployed contract and the creator tx hash
  */
 // TODO: ABI type definition
 export async function deployFromAbiAndBytecode(
-  web3: Web3,
+  signer: Signer,
   contractFolderPath: string,
-  from: string,
-  args?: any[]
+  constructorArgs?: any[],
 ) {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
   const artifact = require(path.join(contractFolderPath, 'artifact.json'));
   // Deploy contract
-  const contract = new web3.eth.Contract(artifact.abi);
-  const deployment = contract.deploy({
-    data: artifact.bytecode,
-    arguments: args || [],
-  });
-  const gas = await deployment.estimateGas({ from });
-
-  // If awaited, the send() Promise returns the contract instance.
-  // We also need the tx hash so we need two seperate event listeners.
-  const sendPromiEvent = deployment.send({
-    from,
-    gas,
-  });
-
-  const txHashPromise = new Promise<string>((resolve, reject) => {
-    sendPromiEvent.on('transactionHash', (txHash) => {
-      resolve(txHash);
-    });
-    sendPromiEvent.on('error', (error) => {
-      reject(error);
-    });
-  });
-
-  const contractAddressPromise = new Promise<string>((resolve, reject) => {
-    sendPromiEvent.on('receipt', (receipt) => {
-      if (!receipt.contractAddress) {
-        reject(new Error('No contract address in receipt'));
-      } else {
-        resolve(receipt.contractAddress);
-      }
-    });
-    sendPromiEvent.on('error', (error) => {
-      reject(error);
-    });
-  });
-
-  return Promise.all([contractAddressPromise, txHashPromise]);
-}
-
-/**
- * Checks the contract from metadata and source files under contractFolderPath and
- * verifies it on sourcifyChain at address.
- * The metadata must be at contractFolderPath/metadata.json and the sources must be under contractFolderPath/sources.
- */
-export const checkAndVerifyDeployed = async (
-  contractFolderPath: string,
-  sourcifyChain: SourcifyChain,
-  address: string,
-  /* contextVariables?: ContextVariables, */
-  creatorTxHash?: string
-) => {
-  const checkedContracts = await checkFilesFromContractFolder(
-    contractFolderPath
+  const contractFactory = new ContractFactory(
+    artifact.abi,
+    artifact.bytecode,
+    signer,
   );
+  const deployment = await contractFactory.deploy(...(constructorArgs || []));
+  await deployment.waitForDeployment();
 
-  const match = await verifyDeployed(
-    checkedContracts[0],
-    sourcifyChain,
-    address,
-    /* contextVariables, */
-    creatorTxHash
-  );
-  return match;
-};
-
-/**
- * Creates a CheckedContract[] from the files under contractFolderPath.
- * The metadata must be at contractFolderPath/metadata.json and the sources must be under contractFolderPath/sources.
- */
-export const checkFilesFromContractFolder = async (
-  contractFolderPath: string
-) => {
-  const metadataPath = path.join(contractFolderPath, 'metadata.json');
-  const metadataBuffer = fs.readFileSync(metadataPath);
-  const metadataPathBuffer = { path: metadataPath, buffer: metadataBuffer };
-
-  const sourceFilePaths = fs.readdirSync(
-    path.join(contractFolderPath, 'sources')
-  );
-  const sourcePathBuffers = sourceFilePaths.map((sourceFilePath) => {
-    const sourceBuffer = fs.readFileSync(
-      path.join(contractFolderPath, 'sources', sourceFilePath)
+  const contractAddress = await deployment.getAddress();
+  const creationTx = deployment.deploymentTransaction();
+  if (!creationTx) {
+    throw new Error(
+      `No deployment transaction found for ${contractAddress} in contract folder ${contractFolderPath}`,
     );
-    return { path: sourceFilePath, buffer: sourceBuffer };
-  });
-  const checkedContracts = await checkFiles([
-    metadataPathBuffer,
-    ...sourcePathBuffers,
-  ]);
-  return checkedContracts;
-};
-/**
- * Combines both deploying and verifying a contract in a single function.
- * Returns the deployed address for assertions on Match.address
- */
-export const deployCheckAndVerify = async (
-  contractFolderPath: string,
-  sourcifyChain: SourcifyChain,
-  web3provider: Web3,
-  from: string,
-  args?: any[]
-) => {
-  const [deployedAddress] = await deployFromAbiAndBytecode(
-    web3provider,
-    contractFolderPath,
-    from,
-    args
-  );
-  const match = await checkAndVerifyDeployed(
-    contractFolderPath,
-    sourcifyChain,
-    deployedAddress
-  );
-  return { match, deployedAddress };
-};
-
-// Sends a tx that changes the state
-export async function callContractMethodWithTx(
-  web3: Web3,
-  contractFolderPath: string,
-  contractAddress: string,
-  methodName: string,
-  from: string,
-  args: any[]
-) {
-  const artifact = require(path.join(contractFolderPath, 'artifact.json'));
-  const contract = new web3.eth.Contract(artifact.abi, contractAddress);
-  const method = contract.methods[methodName](...args);
-  const gas = await method.estimateGas({ from });
-
-  const txReceipt = await method.send({
-    from,
-    gas,
-  });
-
-  return txReceipt;
+  }
+  return { contractAddress, txHash: creationTx.hash };
 }
 
-export const expectMatch = (
-  match: Match,
-  status: string | null,
-  address: string,
-  libraryMap?: { [key: string]: string },
-  message?: string
-) => {
+class Solc implements ISolidityCompiler {
+  async compile(
+    version: string,
+    solcJsonInput: SolidityJsonInput,
+    forceEmscripten: boolean = false,
+  ): Promise<SolidityOutput> {
+    const compilersPath = path.join('/tmp', 'lib-sourcify-solc-repo');
+    const solJsonRepo = path.join('/tmp', 'lib-sourcify-soljson-repo');
+    return await useSolidityCompiler(
+      compilersPath,
+      solJsonRepo,
+      version,
+      solcJsonInput,
+      forceEmscripten,
+    );
+  }
+}
+
+export const solc = new Solc();
+
+class VyperCompiler implements IVyperCompiler {
+  async compile(
+    version: string,
+    solcJsonInput: VyperJsonInput,
+  ): Promise<VyperOutput> {
+    return await useVyperCompiler(
+      path.join('/tmp', 'lib-sourcify-vyper-repo'),
+      version,
+      solcJsonInput,
+    );
+  }
+}
+
+export const vyperCompiler = new VyperCompiler();
+
+class FeCompiler implements IFeCompiler {
+  async compile(version: string, feJsonInput: FeJsonInput): Promise<FeOutput> {
+    return await useFeCompiler(
+      path.join('/tmp', 'lib-sourcify-fe-repo'),
+      version,
+      feJsonInput,
+    );
+  }
+}
+
+export const feCompiler = new FeCompiler();
+
+class SolarCompiler implements ISolarCompiler {
+  async compile(
+    version: string,
+    solarJsonInput: SolarJsonInput,
+  ): Promise<SolarOutput> {
+    return await useSolarCompiler(
+      path.join('/tmp', 'lib-sourcify-solar-repo'),
+      version,
+      solarJsonInput,
+    );
+  }
+}
+
+export const solarCompiler = new SolarCompiler();
+
+/**
+ * Helper function to verify a Verification object using its getters
+ * @param verification The Verification object to check
+ * @param expected Object containing the expected values to verify
+ */
+export function expectVerification(
+  verification: Verification,
+  expected: {
+    status?: {
+      runtimeMatch?: 'perfect' | 'partial' | null;
+      creationMatch?: 'perfect' | 'partial' | null;
+    };
+    libraryMap?: {
+      runtime?: { [key: string]: string };
+      creation?: { [key: string]: string };
+    };
+    deploymentInfo?: {
+      blockNumber?: number;
+      txIndex?: number;
+      deployer?: string;
+    };
+    transformations?: {
+      runtime?: {
+        list?: any[];
+        values?: any;
+      };
+      creation?: {
+        list?: any[];
+        values?: any;
+      };
+    };
+    abiEncodedConstructorArguments?: string;
+    cborAuxdata?: {
+      runtime?: CompiledContractCborAuxdata;
+      creation?: CompiledContractCborAuxdata;
+    };
+  },
+) {
   try {
-    expect(match.status).to.equal(status);
-    expect(match.address).to.equal(address);
-    if (libraryMap) {
-      expect(match.libraryMap).to.deep.equal(libraryMap);
+    // Check status
+    if (expected.status) {
+      if (expected.status.runtimeMatch !== undefined) {
+        expect(verification.status.runtimeMatch).to.equal(
+          expected.status.runtimeMatch,
+        );
+      }
+      if (expected.status.creationMatch !== undefined) {
+        expect(verification.status.creationMatch).to.equal(
+          expected.status.creationMatch,
+        );
+      }
     }
-    if (message) {
-      expect(match.message).to.equal(message);
+
+    // Check library map
+    if (expected.libraryMap) {
+      if (expected.libraryMap.runtime) {
+        expect(verification.libraryMap.runtime).to.deep.equal(
+          expected.libraryMap.runtime,
+        );
+      }
+      if (expected.libraryMap.creation) {
+        expect(verification.libraryMap.creation).to.deep.equal(
+          expected.libraryMap.creation,
+        );
+      }
+    }
+
+    // Check deployment info
+    if (expected.deploymentInfo) {
+      if (expected.deploymentInfo.blockNumber !== undefined) {
+        expect(verification.deploymentInfo.blockNumber).to.equal(
+          expected.deploymentInfo.blockNumber,
+        );
+      }
+      if (expected.deploymentInfo.txIndex !== undefined) {
+        expect(verification.deploymentInfo.txIndex).to.equal(
+          expected.deploymentInfo.txIndex,
+        );
+      }
+      if (expected.deploymentInfo.deployer !== undefined) {
+        expect(verification.deploymentInfo.deployer).to.equal(
+          expected.deploymentInfo.deployer,
+        );
+      }
+    }
+
+    // Check transformations
+    if (expected.transformations) {
+      if (expected.transformations.runtime) {
+        if (expected.transformations.runtime.list) {
+          expect(verification.transformations.runtime.list).to.deep.equal(
+            expected.transformations.runtime.list,
+          );
+        }
+        if (expected.transformations.runtime.values) {
+          expect(verification.transformations.runtime.values).to.deep.equal(
+            expected.transformations.runtime.values,
+          );
+        }
+      }
+      if (expected.transformations.creation) {
+        if (expected.transformations.creation.list) {
+          expect(verification.transformations.creation.list).to.deep.equal(
+            expected.transformations.creation.list,
+          );
+        }
+        if (expected.transformations.creation.values) {
+          expect(verification.transformations.creation.values).to.deep.equal(
+            expected.transformations.creation.values,
+          );
+        }
+      }
+    }
+    if (expected.cborAuxdata) {
+      if (expected.cborAuxdata.creation) {
+        expect(
+          verification.compilation.creationBytecodeCborAuxdata,
+        ).to.deep.equal(expected.cborAuxdata.creation);
+      }
+      if (expected.cborAuxdata.runtime) {
+        expect(
+          verification.compilation.runtimeBytecodeCborAuxdata,
+        ).to.deep.equal(expected.cborAuxdata.runtime);
+      }
     }
   } catch (e) {
-    console.log('Match: ', match);
+    console.log('Verification:', verification);
     throw e;
   }
-};
+}
+
+export class TestSolidityCompiler implements ISolidityCompiler {
+  async compile(
+    version: string,
+    solcJsonInput: any,
+    forceEmscripten = false,
+  ): Promise<SolidityOutput> {
+    const compilersPath = path.join('/tmp', 'lib-sourcify-solc-repo');
+    const solJsonRepo = path.join('/tmp', 'lib-sourcify-soljson-repo');
+    return await useSolidityCompiler(
+      compilersPath,
+      solJsonRepo,
+      version,
+      solcJsonInput,
+      forceEmscripten,
+    );
+  }
+}
+
+export function assertCborTransformations(transformations?: any[]) {
+  expect(transformations, 'Expected CBOR transformations').to.not.be.undefined;
+  if (!transformations) {
+    throw new Error('Expected CBOR transformations');
+  }
+
+  expect(transformations.length).to.be.greaterThan(0);
+  expect(
+    transformations.every(
+      (transformation) => transformation.reason === 'cborAuxdata',
+    ),
+  ).to.equal(true);
+}
+
+export type MetadataMutator = (metadata: Metadata) => void;
+
+export async function getCompilationFromMetadata(
+  contractFolderPath: string,
+  metadataMutator?: MetadataMutator,
+) {
+  // Read metadata.json directly
+  const metadataPath = path.join(contractFolderPath, 'metadata.json');
+  const metadataRaw = fs.readFileSync(metadataPath, 'utf8');
+  const metadata: Metadata = JSON.parse(metadataRaw);
+
+  if (metadataMutator) {
+    metadataMutator(metadata);
+  }
+
+  // Read source files from the sources directory
+  const sourcesPath = path.join(contractFolderPath, 'sources');
+  const sources: PathContent[] = [];
+
+  // Recursively read all files from the sources directory
+  const readDirRecursively = (dir: string, baseDir: string = '') => {
+    const files = fs.readdirSync(dir);
+    for (const file of files) {
+      const fullPath = path.join(dir, file);
+      const relativePath = path.join(baseDir, file);
+      if (fs.statSync(fullPath).isDirectory()) {
+        readDirRecursively(fullPath, relativePath);
+      } else {
+        const content = fs.readFileSync(fullPath, 'utf8');
+        sources.push({
+          path: relativePath,
+          content,
+        });
+      }
+    }
+  };
+
+  readDirRecursively(sourcesPath);
+
+  // Create metadata contract
+  const metadataContract = new SolidityMetadataContract(metadata, sources);
+
+  // Create compilation
+  return await metadataContract.createCompilation(new TestSolidityCompiler());
+}
+
+export async function compileContractWithMetadata(
+  contractFolderPath: string,
+  metadataMutator?: MetadataMutator,
+) {
+  const compilation = await getCompilationFromMetadata(
+    contractFolderPath,
+    metadataMutator,
+  );
+  await compilation.compile();
+  return compilation;
+}
+
+export async function deployCompiledContract(
+  signer: JsonRpcSigner,
+  compilation: SolidityCompilation,
+  constructorArgs: unknown[] = [],
+) {
+  const contractOutput =
+    compilation.contractCompilerOutput as SolidityOutputContract;
+  const contractFactory = new ContractFactory(
+    contractOutput.abi,
+    compilation.creationBytecode,
+    signer,
+  );
+  const deployment = await contractFactory.deploy(...constructorArgs);
+  await deployment.waitForDeployment();
+
+  const contractAddress = await deployment.getAddress();
+  const creationTx = deployment.deploymentTransaction();
+
+  if (!creationTx) {
+    throw new Error('Deployment transaction not found.');
+  }
+
+  return {
+    contractAddress,
+    txHash: creationTx.hash,
+  };
+}
+
+/**
+ * Deploys a Fe contract from its creation bytecode.
+ * @param creationBytecode - raw hex string (from Fe artifact.json)
+ */
+export async function deployFeContract(
+  signer: JsonRpcSigner,
+  creationBytecode: string,
+): Promise<{ contractAddress: string; txHash: string }> {
+  const tx = await signer.sendTransaction({ data: creationBytecode });
+  const receipt = await tx.wait();
+  if (!receipt || !receipt.contractAddress) {
+    throw new Error(`No contract address in receipt for tx ${tx.hash}`);
+  }
+  return { contractAddress: receipt.contractAddress, txHash: tx.hash };
+}
+
+// Helper function to create Vyper compilation
+export async function createVyperCompilation(
+  contractFolderPath: string,
+  version: string,
+  settings: {
+    evmVersion?: 'london' | 'paris' | 'shanghai' | 'cancun' | 'istanbul';
+    optimize?: 'gas' | 'codesize' | 'none' | boolean;
+  } = { evmVersion: 'istanbul' },
+) {
+  const contractFileName = 'test.vy';
+  const contractFileContent = await fs.promises.readFile(
+    path.join(contractFolderPath, contractFileName),
+  );
+
+  return new VyperCompilation(
+    vyperCompiler,
+    version,
+    {
+      language: 'Vyper',
+      sources: {
+        [contractFileName]: {
+          content: contractFileContent.toString(),
+        },
+      },
+      settings: {
+        ...settings,
+        outputSelection: {
+          '*': ['evm.bytecode'],
+        },
+      },
+    },
+    {
+      path: contractFileName,
+      name: contractFileName.split('.')[0],
+    },
+  );
+}

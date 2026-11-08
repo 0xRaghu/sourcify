@@ -1,0 +1,141 @@
+# Sourcify Database
+
+`sourcify-database` contains the database migrations for the PostgreSQL using [dbmate](https://github.com/amacneil/dbmate) to update its schema.
+
+Sourcify's database is an extension of the [Verifier Alliance](https://verifieralliance.org) database with some modifications. The initial modifications are specified in the [20250722133557_sourcify.sql](./migrations/20250722133557_sourcify.sql) migration. In short, Sourcify allows contract verification without the creation bytecode and creation information such as the creation transaction hash. In addition, a table `sourcify_matches` is created to store the match type (full vs. partial) and the contract metadata in the database.
+
+The migrations can be run to set up the Sourcify database.
+A complete dump of the Sourcify database schema can be found in `./sourcify-database.sql`.
+
+## Running the database
+
+We use PostgreSQL 15.13 for the database. Higher versions should also work but are not tested.
+
+### Run with Docker
+
+For convenience, you can run the Postgres container in `docker-compose.yml` with
+
+```bash
+docker-compose up
+```
+
+## Database migrations
+
+The Sourcify database migrations consist of all migrations of the Verifier Alliance [database-specs](https://github.com/verifier-alliance/database-specs), and any Sourcify modifications added in this repository inside `./migrations`.
+The migrations should be used to update the live Sourcify production and staging databases, or any local testing database instance.
+
+Schema changes should be made depending on the type of change:
+If they are a Sourcify extension, they should be made inside this repo.
+If they concern the Verifier Alliance schema, changes should be made in the Verifier Alliance [database-specs](https://github.com/verifier-alliance/database-specs) repository and then be pulled into this repository by updating the git submodule.
+After updating the submodule, the schema dump `sourcify-database.sql` should be updated by running the migrations from this repository.
+
+Any new migration should be capable of updating the live Sourcify staging and production databases.
+
+Migrations are applied by hand, not by CI. Every PR that adds a migration must also add a file in [`.release-todos/`](../../.release-todos/README.md), so the release script reminds the person who releases to apply it on staging and production.
+
+Please also see the section on [schema upgrade scripts](#schema-upgrade-scripts) as some migrations on a live database might require running a follow-up script to complete the schema change.
+
+### Prerequisites
+
+Please initialize the Verifier Alliance [database-specs](https://github.com/verifier-alliance/database-specs) submodule before moving on with the migrations:
+
+```bash
+git submodule update --init
+```
+
+**Extensions**
+
+- `pg_cron`: used to schedule the refresh of the signature stats materialized view. Make sure you [install the `pg_cron` extension](https://github.com/citusdata/pg_cron) and set the `cron.database_name` variable to the name of the database you are using.
+  - If the `pg_cron` extension is not available, adding `pg_cron` and creating the cron job will be skipped in the migration.
+  - Importing `sourcify-database.sql` directly does not install `pg_cron` or create the `refresh-signature-stats` cron job. The cron job is created only when running migrations.
+  - In Google Cloud SQL, you can install the extension by setting the flag `cloudsql.enable_pg_cron` to `true`, and setting the `cron.database_name` flag to the name of the database you are using.
+- `pg_trgm`: used to create the index on the `signatures` table.
+- `pgcrypto`: used to create the `signature_type_enum` type.
+
+dbmate is used to manage the database migrations.
+A local installation of dbmate comes with `npm i`.
+We will use npm scripts here for running dbmate in order to automatically include the Verifier Alliance migrations when necessary.
+
+As a prerequisite for using dbmate, you should have a `.env` file configured with the database connection details.
+Copy the `.env.template` file to `.env` and replace the database connection string in `DATABASE_URL`.
+Please make sure to have the correct database configured before running any migration commands.
+
+### See the status of the migrations
+
+You can check which migrations have been applied to the database configured in `.env` by running:
+
+```bash
+npm run migrate:status
+```
+
+### Running the migrations
+
+For running any pending migrations, you can execute:
+
+```bash
+npm run migrate:up
+```
+
+Note that this will also create the database configured in the `DATABASE_URL` if it does not exist yet.
+
+### Roll back migrations
+
+To reverse the most recently executed migration (one per call), run:
+
+```bash
+npm run migrate:rollback
+```
+
+### Adding a new migration
+
+Please follow these steps:
+
+1. Create a new migration file: `npm run migrate:new <migration_name>`
+2. Add the required SQL for the schema change to the generated migration file (e.g., `./migrations/20250717103432_<migration_name>.sql`).
+3. Apply the new migration to a local database: `npm run migrate:up`. `dbmate` automatically generates the updated `sourcify-database.sql` dump. There won't be an error if the dump cannot be generated. You can run `npx dbmate dump` to generate the dump manually or see the errors.
+4. Commit both the new migration file and the updated `sourcify-database.sql` to the repository.
+
+Important: Since the schema dump should be committed, ensure that the connected database does not contain any custom schema changes that are not part of the migrations.
+If you are unsure whether your local database has custom schema changes, run the process against a fresh database.
+
+#### Regenerating `sourcify-database.sql`
+
+Never hand-edit `sourcify-database.sql`; always regenerate it with dbmate. The `validate-database-schema` CI job applies all migrations to a clean PostgreSQL, dumps it, and diffs (comment/blank-line-normalized) against the committed file. pg_dump's object ordering is non-obvious (e.g. constraints sort by constraint name, not table name), so hand-edits get the ordering wrong and fail CI.
+
+To regenerate against a disposable local database, from the repository root:
+
+```bash
+docker run -d --name schema-regen -e POSTGRES_PASSWORD=password -e POSTGRES_USER=postgres -e POSTGRES_DB=test_db -p 127.0.0.1:55432:5432 postgres:15
+
+cd services/database && DATABASE_URL="postgres://postgres:password@127.0.0.1:55432/test_db?sslmode=disable" DBMATE_SCHEMA_FILE=./sourcify-database.sql npm run migrate:up
+
+docker rm -f schema-regen
+```
+
+dbmate shells out to a local `pg_dump`, which should be version 15 to match CI (pgdg `postgresql-client-15`). Do not use pg_dump 17: it emits `SET transaction_timeout` lines that CI's normalizer does not strip, so its dumps fail the diff.
+
+## Schema upgrade scripts
+
+Some schema changes cannot be completed inside a single dbmate migration; for example, data backfills that touch millions of rows and need to run in small batches outside a long transaction. For these cases we keep one-off Node scripts under [`./schema-updates/`](./schema-updates/) that complement the migrations.
+
+When upgrading a live Sourcify database, check the table below for any scripts that apply to the version range you are crossing. Each script's header comment documents its prerequisites, the migration it pairs with, and the CLI flags it accepts.
+
+The scripts are idempotent, resumable and they only touch rows that still need work. Run them against the same database configured in `./.env`.
+
+### Available upgrade scripts
+
+| Script                                                                                                                            | When to run                                                                                                                                                                                                                                      | What it does                                                                                                                                                                  |
+| --------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`post-v0-to-v1-upgrade.mjs`](./schema-updates/post-v0-to-v1-upgrade.mjs)                                                         | After upgrading to the v1 schema, once the `sources` table is populated.                                                                                                                                                                         | Backfills `sources.source_hash_keccak` with the keccak256 hash of each source.                                                                                                |
+| [`post-v2.12-to-v2.13-upgrade.mjs`](./schema-updates/post-v2.12-to-v2.13-upgrade.mjs)                                             | After applying the v2.13 migration that adds the nullable `sourcify_matches.chain_id` column, and before applying the follow-up migration that promotes it to `NOT NULL`.                                                                        | Backfills `sourcify_matches.chain_id` from `contract_deployments.chain_id` in batches.                                                                                        |
+| [`backfill-compiled-contracts-runtime-code-prefixes.mjs`](./schema-updates/backfill-compiled-contracts-runtime-code-prefixes.mjs) | After applying the migration that adds the `compiled_contracts_runtime_code_prefixes` table, and before deploying server version 3.18.0.                                                                                                         | Backfills `compiled_contracts_runtime_code_prefixes` (first 75 bytes of each compilation's runtime code) for compilations that existed before the migration's insert trigger. |
+| [`backfill-compiled-contracts-metadata.mjs`](./schema-updates/backfill-compiled-contracts-metadata.mjs)                           | After applying the migration that adds `compiled_contracts_metadata` (server 4.1.0 dual-writes to it) and before deploying the version that reads metadata only from that table. Run `--verify` first; the same release drops the source column. | Backfills `compiled_contracts_metadata` from `sourcify_matches.metadata`, one row per compilation (first current match by `verified_contracts.id`).                           |
+
+Run a script with:
+
+```bash
+cd services/database/schema-updates
+node <script-name>.mjs [options]
+```
+
+Pass `--help` (where supported) for the full list of options. The scripts read database connection details from `services/database/.env`, the same file used by dbmate.
